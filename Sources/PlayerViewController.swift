@@ -48,7 +48,7 @@ final class ImageCache {
     }
 }
 
-class PlayerViewController: NSViewController {
+class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     // UI Elements
     private let albumArt = NSImageView()
     private let songLabel = NSTextField(labelWithString: "")
@@ -56,12 +56,22 @@ class PlayerViewController: NSViewController {
     private let progressBar = NSProgressIndicator()
     private let elapsedLabel = NSTextField(labelWithString: "0:00")
     private let timeLabel = NSTextField(labelWithString: "0:00")
+    private let replayButton = NSButton()
     private let playPauseButton = NSButton()
     private let nextButton = NSButton()
     private let thumbsUpButton = NSButton()
     private let thumbsDownButton = NSButton()
     private let stationsButton = NSButton()
     private let settingsButton = NSButton()
+
+    // History UI
+    private let historyToggleButton = NSButton()
+    private let historyChevron = NSButton()
+    private let historySeparator = NSView()
+    private let historyScrollView = NSScrollView()
+    private let historyTableView = NSTableView()
+    private var historyHeightConstraint: NSLayoutConstraint!
+    private(set) var isHistoryOpen = false
 
     private let loadingSpinner = NSProgressIndicator()
     private let offlineOverlay = NSView()
@@ -73,6 +83,7 @@ class PlayerViewController: NSViewController {
     private var currentArtUrl: String?
 
     // Callbacks
+    var onReplay: (() -> Void)?
     var onPlayPause: (() -> Void)?
     var onNext: (() -> Void)?
     var onThumbsUp: (() -> Void)?
@@ -81,6 +92,9 @@ class PlayerViewController: NSViewController {
     var onSettings: (() -> Void)?
     var onAbout: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onHistoryToggled: ((Bool) -> Void)?
+    var onHistoryThumbsUp: ((String) -> Void)?
+    var onHistoryThumbsDown: ((String) -> Void)?
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 130))
@@ -166,22 +180,60 @@ class PlayerViewController: NSViewController {
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(timeLabel)
 
-        // Bottom row: thumbs | play/pause, next | stations
+        // Bottom row: [historyToggle + chevron] ... [thumbsDown replay play next thumbsUp] ... [stations]
+
+        // History toggle button (left side, chrome style like settings gear)
+        historyToggleButton.image = NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "History")
+        historyToggleButton.isBordered = false
+        historyToggleButton.contentTintColor = .lightGray
+        let historyConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        historyToggleButton.symbolConfiguration = historyConfig
+        historyToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        historyToggleButton.target = self
+        historyToggleButton.action = #selector(historyToggleTapped)
+        view.addSubview(historyToggleButton)
+
+        // Disclosure chevron
+        historyChevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        historyChevron.isBordered = false
+        historyChevron.contentTintColor = .lightGray
+        let chevronConfig = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        historyChevron.symbolConfiguration = chevronConfig
+        historyChevron.translatesAutoresizingMaskIntoConstraints = false
+        historyChevron.target = self
+        historyChevron.action = #selector(historyToggleTapped)
+        view.addSubview(historyChevron)
+
+        // Thumbs down (left of replay, white tint)
         thumbsDownButton.image = NSImage(systemSymbolName: "hand.thumbsdown.fill", accessibilityDescription: "Thumbs Down")
         thumbsDownButton.isBordered = false
-        thumbsDownButton.contentTintColor = .lightGray
+        thumbsDownButton.contentTintColor = .white
+        let thumbsConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        thumbsDownButton.symbolConfiguration = thumbsConfig
         thumbsDownButton.translatesAutoresizingMaskIntoConstraints = false
         thumbsDownButton.target = self
         thumbsDownButton.action = #selector(thumbsDownTapped)
         view.addSubview(thumbsDownButton)
 
+        // Thumbs up (right of next, white tint)
         thumbsUpButton.image = NSImage(systemSymbolName: "hand.thumbsup.fill", accessibilityDescription: "Thumbs Up")
         thumbsUpButton.isBordered = false
-        thumbsUpButton.contentTintColor = .lightGray
+        thumbsUpButton.contentTintColor = .white
+        thumbsUpButton.symbolConfiguration = thumbsConfig
         thumbsUpButton.translatesAutoresizingMaskIntoConstraints = false
         thumbsUpButton.target = self
         thumbsUpButton.action = #selector(thumbsUpTapped)
         view.addSubview(thumbsUpButton)
+
+        replayButton.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "Replay")
+        replayButton.isBordered = false
+        replayButton.contentTintColor = .white
+        let replayConfig = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        replayButton.symbolConfiguration = replayConfig
+        replayButton.translatesAutoresizingMaskIntoConstraints = false
+        replayButton.target = self
+        replayButton.action = #selector(replayTapped)
+        view.addSubview(replayButton)
 
         playPauseButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Play/Pause")
         playPauseButton.isBordered = false
@@ -213,6 +265,9 @@ class PlayerViewController: NSViewController {
 
         songLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         artistLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Bottom row is pinned to top (y=100) instead of bottom, so tray can grow below
+        let bottomRowY = view.topAnchor
 
         NSLayoutConstraint.activate([
             // Top row
@@ -249,29 +304,87 @@ class PlayerViewController: NSViewController {
             timeLabel.leadingAnchor.constraint(equalTo: progressBar.trailingAnchor, constant: 6),
             timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
 
-            // Bottom row
-            thumbsDownButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
-            thumbsDownButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            thumbsDownButton.widthAnchor.constraint(equalToConstant: 24),
-            thumbsDownButton.heightAnchor.constraint(equalToConstant: 24),
+            // Bottom row — vertically centered between album art bottom (90) and pane bottom (130)
+            historyToggleButton.topAnchor.constraint(equalTo: bottomRowY, constant: 99),
+            historyToggleButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            historyToggleButton.widthAnchor.constraint(equalToConstant: 24),
+            historyToggleButton.heightAnchor.constraint(equalToConstant: 24),
 
-            thumbsUpButton.centerYAnchor.constraint(equalTo: thumbsDownButton.centerYAnchor),
-            thumbsUpButton.leadingAnchor.constraint(equalTo: thumbsDownButton.trailingAnchor, constant: 12),
-            thumbsUpButton.widthAnchor.constraint(equalToConstant: 24),
-            thumbsUpButton.heightAnchor.constraint(equalToConstant: 24),
+            historyChevron.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            historyChevron.leadingAnchor.constraint(equalTo: historyToggleButton.trailingAnchor, constant: -2),
+            historyChevron.widthAnchor.constraint(equalToConstant: 12),
+            historyChevron.heightAnchor.constraint(equalToConstant: 12),
 
-            playPauseButton.centerYAnchor.constraint(equalTo: thumbsDownButton.centerYAnchor),
-            playPauseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor, constant: 10),
+            // Centered transport cluster: thumbsDown, replay, play, next, thumbsUp
+            playPauseButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            playPauseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             playPauseButton.widthAnchor.constraint(equalToConstant: 32),
             playPauseButton.heightAnchor.constraint(equalToConstant: 32),
 
-            nextButton.centerYAnchor.constraint(equalTo: thumbsDownButton.centerYAnchor),
+            replayButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            replayButton.trailingAnchor.constraint(equalTo: playPauseButton.leadingAnchor, constant: -12),
+            replayButton.widthAnchor.constraint(equalToConstant: 28),
+            replayButton.heightAnchor.constraint(equalToConstant: 28),
+
+            thumbsDownButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            thumbsDownButton.trailingAnchor.constraint(equalTo: replayButton.leadingAnchor, constant: -10),
+            thumbsDownButton.widthAnchor.constraint(equalToConstant: 26),
+            thumbsDownButton.heightAnchor.constraint(equalToConstant: 26),
+
+            nextButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
             nextButton.leadingAnchor.constraint(equalTo: playPauseButton.trailingAnchor, constant: 12),
             nextButton.widthAnchor.constraint(equalToConstant: 28),
             nextButton.heightAnchor.constraint(equalToConstant: 28),
 
-            stationsButton.centerYAnchor.constraint(equalTo: thumbsDownButton.centerYAnchor),
+            thumbsUpButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            thumbsUpButton.leadingAnchor.constraint(equalTo: nextButton.trailingAnchor, constant: 10),
+            thumbsUpButton.widthAnchor.constraint(equalToConstant: 26),
+            thumbsUpButton.heightAnchor.constraint(equalToConstant: 26),
+
+            stationsButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
             stationsButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+        ])
+
+        // History tray
+
+        // Separator line
+        historySeparator.wantsLayer = true
+        historySeparator.layer?.backgroundColor = NSColor(white: 0.3, alpha: 1).cgColor
+        historySeparator.translatesAutoresizingMaskIntoConstraints = false
+        historySeparator.isHidden = true
+        view.addSubview(historySeparator)
+
+        // Scroll view + table view
+        historyScrollView.translatesAutoresizingMaskIntoConstraints = false
+        historyScrollView.hasVerticalScroller = true
+        historyScrollView.drawsBackground = false
+        historyScrollView.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        view.addSubview(historyScrollView)
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("HistoryColumn"))
+        column.width = 360
+        historyTableView.addTableColumn(column)
+        historyTableView.headerView = nil
+        historyTableView.rowHeight = 52
+        historyTableView.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        historyTableView.dataSource = self
+        historyTableView.delegate = self
+        historyTableView.style = .plain
+        historyTableView.selectionHighlightStyle = .none
+        historyScrollView.documentView = historyTableView
+
+        historyHeightConstraint = historyScrollView.heightAnchor.constraint(equalToConstant: 0)
+
+        NSLayoutConstraint.activate([
+            historySeparator.topAnchor.constraint(equalTo: view.topAnchor, constant: 130),
+            historySeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            historySeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            historySeparator.heightAnchor.constraint(equalToConstant: 1),
+
+            historyScrollView.topAnchor.constraint(equalTo: historySeparator.bottomAnchor),
+            historyScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            historyScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            historyHeightConstraint,
         ])
 
         // Loading spinner (shown during track fetches)
@@ -381,7 +494,7 @@ class PlayerViewController: NSViewController {
     }
 
     func highlightThumbsUp(_ highlighted: Bool) {
-        thumbsUpButton.contentTintColor = highlighted ? .systemGreen : .lightGray
+        thumbsUpButton.contentTintColor = highlighted ? .systemGreen : .white
     }
 
     func showError(_ message: String) {
@@ -412,15 +525,37 @@ class PlayerViewController: NSViewController {
 
     func setControlsEnabled(_ enabled: Bool) {
         let tint: NSColor = enabled ? .white : .gray
-        let feedbackTint: NSColor = enabled ? .lightGray : .gray
+        replayButton.isEnabled = enabled
+        replayButton.contentTintColor = tint
         playPauseButton.isEnabled = enabled
         playPauseButton.contentTintColor = tint
         nextButton.isEnabled = enabled
         nextButton.contentTintColor = tint
         thumbsUpButton.isEnabled = enabled
-        thumbsUpButton.contentTintColor = feedbackTint
+        thumbsUpButton.contentTintColor = tint
         thumbsDownButton.isEnabled = enabled
-        thumbsDownButton.contentTintColor = feedbackTint
+        thumbsDownButton.contentTintColor = tint
+    }
+
+    // MARK: - History Tray
+
+    func setHistoryOpen(_ open: Bool, animated: Bool = false) {
+        isHistoryOpen = open
+        let chevronName = open ? "chevron.down" : "chevron.right"
+        historyChevron.image = NSImage(systemSymbolName: chevronName, accessibilityDescription: nil)
+        historySeparator.isHidden = !open
+        historyHeightConstraint.constant = open ? 260 : 0
+        if open {
+            historyTableView.reloadData()
+        }
+        let newSize = NSSize(width: 360, height: open ? 390 : 130)
+        self.preferredContentSize = newSize
+    }
+
+    func reloadHistory() {
+        if isHistoryOpen {
+            historyTableView.reloadData()
+        }
     }
 
     // MARK: - Offline State
@@ -452,11 +587,18 @@ class PlayerViewController: NSViewController {
 
     // MARK: - Actions
 
+    @objc private func replayTapped() { onReplay?() }
     @objc private func playPauseTapped() { onPlayPause?() }
     @objc private func nextTapped() { onNext?() }
     @objc private func thumbsUpTapped() { onThumbsUp?() }
     @objc private func thumbsDownTapped() { onThumbsDown?() }
     @objc private func stationsTapped() { onStations?() }
+
+    @objc private func historyToggleTapped() {
+        let newState = !isHistoryOpen
+        setHistoryOpen(newState)
+        onHistoryToggled?(newState)
+    }
 
     @objc private func settingsTapped() {
         settingsButton.menu?.popUp(
@@ -469,5 +611,88 @@ class PlayerViewController: NSViewController {
     @objc private func aboutTapped() { onAbout?() }
     @objc private func settingsMenuTapped() { onSettings?() }
     @objc private func quitTapped() { onQuit?() }
+
+    // MARK: - History Row Actions
+
+    @objc private func historyThumbsUpTapped(_ sender: NSButton) {
+        guard let token = sender.identifier?.rawValue else { return }
+        onHistoryThumbsUp?(token)
+    }
+
+    @objc private func historyThumbsDownTapped(_ sender: NSButton) {
+        guard let token = sender.identifier?.rawValue else { return }
+        onHistoryThumbsDown?(token)
+    }
+
+    // MARK: - NSTableViewDataSource
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        return TrackHistory.shared.entries.count
+    }
+
+    // MARK: - NSTableViewDelegate
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let entries = TrackHistory.shared.entries
+        guard row < entries.count else { return nil }
+        let entry = entries[row]
+
+        let cell = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 52))
+
+        // Album art
+        let art = NSImageView(frame: NSRect(x: 8, y: 6, width: 40, height: 40))
+        art.wantsLayer = true
+        art.layer?.cornerRadius = 4
+        art.layer?.masksToBounds = true
+        art.layer?.backgroundColor = NSColor(white: 0.2, alpha: 1).cgColor
+        art.imageScaling = .scaleProportionallyUpOrDown
+        art.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
+        if let artUrl = entry.albumArtUrl {
+            ImageCache.shared.image(for: artUrl) { image in
+                if let image = image {
+                    art.image = image
+                }
+            }
+        }
+        cell.addSubview(art)
+
+        // Title
+        let title = NSTextField(labelWithString: entry.songName)
+        title.font = .systemFont(ofSize: 12, weight: .medium)
+        title.textColor = .white
+        title.lineBreakMode = .byTruncatingTail
+        title.frame = NSRect(x: 56, y: 28, width: 200, height: 16)
+        cell.addSubview(title)
+
+        // Artist
+        let artist = NSTextField(labelWithString: entry.artistName)
+        artist.font = .systemFont(ofSize: 10)
+        artist.textColor = .lightGray
+        artist.lineBreakMode = .byTruncatingTail
+        artist.frame = NSRect(x: 56, y: 10, width: 200, height: 14)
+        cell.addSubview(artist)
+
+        // Thumbs down button
+        let downBtn = NSButton(frame: NSRect(x: 278, y: 16, width: 20, height: 20))
+        downBtn.image = NSImage(systemSymbolName: "hand.thumbsdown", accessibilityDescription: "Dislike")
+        downBtn.isBordered = false
+        downBtn.contentTintColor = .gray
+        downBtn.identifier = NSUserInterfaceItemIdentifier(entry.trackToken)
+        downBtn.target = self
+        downBtn.action = #selector(historyThumbsDownTapped)
+        cell.addSubview(downBtn)
+
+        // Thumbs up button
+        let upBtn = NSButton(frame: NSRect(x: 306, y: 16, width: 20, height: 20))
+        upBtn.image = NSImage(systemSymbolName: "hand.thumbsup", accessibilityDescription: "Like")
+        upBtn.isBordered = false
+        upBtn.contentTintColor = entry.songRating == 1 ? .systemGreen : .gray
+        upBtn.identifier = NSUserInterfaceItemIdentifier(entry.trackToken)
+        upBtn.target = self
+        upBtn.action = #selector(historyThumbsUpTapped)
+        cell.addSubview(upBtn)
+
+        return cell
+    }
 }
 #endif

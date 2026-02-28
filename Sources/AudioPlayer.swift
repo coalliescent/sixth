@@ -59,6 +59,10 @@ class AudioPlayer {
     func playNext() {
         guard !trackQueue.isEmpty else {
             print("[AudioPlayer] playNext: queue empty, requesting more tracks")
+            if let outgoing = currentTrack, !outgoing.isAd {
+                TrackHistory.shared.add(HistoryEntry(from: outgoing))
+                currentTrack = nil
+            }
             onNeedMoreTracks?()
             return
         }
@@ -84,6 +88,10 @@ class AudioPlayer {
         // Clean up previous
         cleanupObservers()
         NotificationCenter.default.removeObserver(self)
+
+        if let outgoing = currentTrack, !outgoing.isAd {
+            TrackHistory.shared.add(HistoryEntry(from: outgoing))
+        }
 
         print("[AudioPlayer] play: \(track.songName ?? "?") by \(track.artistName ?? "?")")
         currentTrack = track
@@ -188,6 +196,16 @@ class AudioPlayer {
         onPlaybackStateChanged?(true)
     }
 
+    func replay() {
+        guard let player = player, playerItem != nil else { return }
+        player.seek(to: .zero)
+        if !isPlaying {
+            player.play()
+            isPlaying = true
+            onPlaybackStateChanged?(true)
+        }
+    }
+
     func togglePlayPause() {
         guard player != nil else { return }
         if isPlaying {
@@ -253,6 +271,7 @@ class AudioPlayer {
     func enqueue(_ tracks: [PlaylistItem]) {}
     func clearQueue() {}
     func playNext() {}
+    func replay() {}
     func togglePlayPause() {}
     func stop() {}
 }

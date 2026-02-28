@@ -42,6 +42,9 @@ struct TestRunner {
         print("\nPandoraAPI Tests:")
         PandoraAPITests.runAll()
 
+        print("\nTrackHistory Tests:")
+        TrackHistoryTests.runAll()
+
         print("\nIntegration Tests:")
         IntegrationTests.runAll()
 

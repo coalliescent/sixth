@@ -123,6 +123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self.notificationManager.showNowPlaying(
                 song: song, artist: artist, album: track.albumName ?? ""
             )
+            self.playerVC.reloadHistory()
         }
 
         audioPlayer.onPlaybackStateChanged = { [weak self] isPlaying in
@@ -169,6 +170,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func setupViewControllers() {
         // Player
         playerVC = PlayerViewController()
+        playerVC.onReplay = { [weak self] in
+            self?.audioPlayer.replay()
+        }
         playerVC.onPlayPause = { [weak self] in
             self?.audioPlayer.togglePlayPause()
         }
@@ -192,6 +196,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         playerVC.onQuit = {
             NSApp.terminate(nil)
+        }
+        playerVC.onHistoryToggled = { [weak self] isOpen in
+            self?.toggleHistory(isOpen: isOpen)
+        }
+        playerVC.onHistoryThumbsUp = { [weak self] trackToken in
+            self?.historyThumbsUp(trackToken: trackToken)
+        }
+        playerVC.onHistoryThumbsDown = { [weak self] trackToken in
+            self?.historyThumbsDown(trackToken: trackToken)
         }
         playerVC.setControlsEnabled(false)
 
@@ -247,6 +260,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func showPlayer() {
+        _ = playerVC.view // ensure viewDidLoad has run
+        let historyOpen = UserDefaults.standard.bool(forKey: "historyTrayOpen")
+        playerVC.setHistoryOpen(historyOpen)
         popover.contentViewController = playerVC
         popover.contentSize = playerVC.preferredContentSize
     }
@@ -497,6 +513,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func enterOfflineState() {
         audioPlayer.stop()
         audioPlayer.clearQueue()
+        playerVC.setHistoryOpen(false)
+        popover.contentSize = playerVC.preferredContentSize
         playerVC.clearTrackDisplay()
         playerVC.showOffline()
         playerVC.updatePlayState(isPlaying: false)
@@ -548,6 +566,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                             try await api.deleteFeedback(feedbackId: fid)
                         }
                     }
+                    TrackHistory.shared.updateRating(trackToken: token, newRating: 0)
+                    self.playerVC.reloadHistory()
                 } catch {
                     print("Remove thumbs up failed: \(error)")
                     self.currentTrackLiked = true
@@ -562,6 +582,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 do {
                     let feedbackId = try await api.addFeedback(trackToken: token, isPositive: true)
                     self.currentFeedbackId = feedbackId
+                    TrackHistory.shared.updateRating(trackToken: token, newRating: 1)
+                    self.playerVC.reloadHistory()
                 } catch {
                     print("Thumbs up failed: \(error)")
                     self.currentTrackLiked = false
@@ -583,6 +605,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    // MARK: - History
+
+    private func toggleHistory(isOpen: Bool) {
+        UserDefaults.standard.set(isOpen, forKey: "historyTrayOpen")
+        let newSize = NSSize(width: 360, height: isOpen ? 390 : 130)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.popover.contentSize = newSize
+        }
+    }
+
+    private func historyThumbsUp(trackToken: String) {
+        let entries = TrackHistory.shared.entries
+        guard let entry = entries.first(where: { $0.trackToken == trackToken }) else { return }
+        let wasLiked = entry.songRating == 1
+        let newRating = wasLiked ? 0 : 1
+
+        TrackHistory.shared.updateRating(trackToken: trackToken, newRating: newRating)
+        playerVC.reloadHistory()
+
+        // Sync with currently playing track if it matches
+        if let current = audioPlayer.currentTrack, current.trackToken == trackToken {
+            currentTrackLiked = newRating == 1
+            playerVC.highlightThumbsUp(newRating == 1)
+        }
+
+        Task {
+            do {
+                if wasLiked {
+                    // Unlike: add feedback to get ID, then delete
+                    let fid = try await api.addFeedback(trackToken: trackToken, isPositive: true)
+                    if let fid = fid {
+                        try await api.deleteFeedback(feedbackId: fid)
+                    }
+                } else {
+                    _ = try await api.addFeedback(trackToken: trackToken, isPositive: true)
+                }
+            } catch {
+                print("History thumbs up failed: \(error)")
+                // Revert
+                TrackHistory.shared.updateRating(trackToken: trackToken, newRating: wasLiked ? 1 : 0)
+                self.playerVC.reloadHistory()
+                if let current = self.audioPlayer.currentTrack, current.trackToken == trackToken {
+                    self.currentTrackLiked = wasLiked
+                    self.playerVC.highlightThumbsUp(wasLiked)
+                }
+            }
+        }
+    }
+
+    private func historyThumbsDown(trackToken: String) {
+        Task {
+            do {
+                _ = try await api.addFeedback(trackToken: trackToken, isPositive: false)
+            } catch {
+                print("History thumbs down failed: \(error)")
+            }
+        }
+    }
+
     // MARK: - Sign Out
 
     private func signOut() {
@@ -592,6 +675,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         isLoggedIn = false
         stations = []
         currentStation = nil
+        UserDefaults.standard.set(false, forKey: "historyTrayOpen")
+        playerVC.setHistoryOpen(false)
         scrollingTitle.setIdle()
         if let button = statusItem.button {
             button.title = ""

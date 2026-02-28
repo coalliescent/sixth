@@ -20,14 +20,15 @@ open Sixth.app    # launch
 
 ## Source Layout
 
-`Sources/` (14 files):
+`Sources/` (15 files):
 - `Main.swift` — entry point
 - `AppDelegate.swift` — status item, popover, navigation, app lifecycle
-- `PlayerViewController.swift` — main player UI (album art, controls, progress)
+- `PlayerViewController.swift` — main player UI (album art, controls, progress, history tray)
 - `LoginViewController.swift` — login form
 - `StationListViewController.swift` — station picker (table view)
 - `SettingsViewController.swift` — settings screen
 - `AudioPlayer.swift` — AVPlayer wrapper, track queue management
+- `TrackHistory.swift` — recently played track history (persisted via UserDefaults, capped at 100)
 - `PandoraAPI.swift` — Pandora JSON API client (partner/user login, playlist, feedback)
 - `Models.swift` — data models (Station, Track, API responses)
 - `BlowfishCrypto.swift` — Blowfish encrypt/decrypt for Pandora API
@@ -36,6 +37,6 @@ open Sixth.app    # launch
 - `NotificationManager.swift` — macOS notification support
 - `ScrollingTitle.swift` — scrolling now-playing text in menubar
 
-`Tests/` (5 files):
+`Tests/` (6 files):
 - `TestMain.swift` — custom test runner (not XCTest)
-- `BlowfishCryptoTests.swift`, `ModelsTests.swift`, `PandoraAPITests.swift`, `IntegrationTests.swift`
+- `BlowfishCryptoTests.swift`, `ModelsTests.swift`, `PandoraAPITests.swift`, `TrackHistoryTests.swift`, `IntegrationTests.swift`
