@@ -117,6 +117,10 @@ class ScrollingTitle: NSObject {
         startAnimation()
     }
 
+    func hide() {
+        removeItem()
+    }
+
     func setIdle() {
         stopAll()
         fullText = ""

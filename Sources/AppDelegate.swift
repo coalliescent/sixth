@@ -36,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var currentTrackLiked = false
     private var currentFeedbackId: String?
     private var settingsFromLogin = false
+    private var pendingScrollingTitleHide = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Permanent app icon (popover anchors here)
@@ -133,9 +134,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audioPlayer.onPlaybackStateChanged = { [weak self] isPlaying in
             self?.playerVC.updatePlayState(isPlaying: isPlaying)
             if isPlaying {
+                self?.pendingScrollingTitleHide = false
                 self?.scrollingTitle.resume()
             } else {
                 self?.scrollingTitle.pause()
+                if self?.popover.isShown == true {
+                    self?.pendingScrollingTitleHide = true
+                } else {
+                    self?.scrollingTitle.hide()
+                }
             }
         }
 
@@ -743,6 +750,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let observer = appDeactivationObserver {
             NotificationCenter.default.removeObserver(observer)
             appDeactivationObserver = nil
+        }
+
+        if pendingScrollingTitleHide {
+            scrollingTitle.hide()
+            pendingScrollingTitleHide = false
         }
 
         if popover.contentViewController !== playerVC &&
