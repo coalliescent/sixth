@@ -5,7 +5,23 @@ import Security
 #endif
 
 enum CredentialStore {
-#if !TESTING
+#if UI_TESTING
+    // File-based credentials for UI testing (no keychain prompts)
+    static func saveCredentials(username: String, password: String) -> Bool { true }
+    static func deleteCredentials() {}
+
+    static func loadCredentials() -> (username: String, password: String)? {
+        let path = NSString(string: "~/.config/sixth/test-credentials.json").expandingTildeInPath
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let username = dict["username"],
+              let password = dict["password"] else {
+            return nil
+        }
+        return (username, password)
+    }
+#elseif !TESTING
     private static let service = "com.sixth.pandora"
     private static let usernameKey = "pandora-username"
     private static let passwordKey = "pandora-password"

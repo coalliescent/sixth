@@ -63,6 +63,8 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     private let thumbsDownButton = NSButton()
     private let stationsButton = NSButton()
     private let settingsButton = NSButton()
+    private let quitButton = NSButton()
+    private let aboutButton = NSButton()
 
     // History UI
     private let historyToggleButton = NSButton()
@@ -110,27 +112,30 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     }
 
     private func setupUI() {
-        // Top row: settings gear (right-aligned)
+        // Button column (right side): quit, settings, about
+        quitButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Quit")
+        quitButton.isBordered = false
+        quitButton.contentTintColor = .lightGray
+        quitButton.translatesAutoresizingMaskIntoConstraints = false
+        quitButton.target = self
+        quitButton.action = #selector(quitTapped)
+        view.addSubview(quitButton)
+
         settingsButton.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: "Settings")
         settingsButton.isBordered = false
         settingsButton.contentTintColor = .lightGray
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
-        settingsButton.sendAction(on: .leftMouseDown)
         settingsButton.target = self
-        settingsButton.action = #selector(settingsTapped)
-
-        let settingsMenu = NSMenu()
-        settingsMenu.addItem(withTitle: "About Sixth", action: #selector(aboutTapped), keyEquivalent: "")
-            .target = self
-        settingsMenu.addItem(.separator())
-        settingsMenu.addItem(withTitle: "Settings...", action: #selector(settingsMenuTapped), keyEquivalent: "")
-            .target = self
-        settingsMenu.addItem(.separator())
-        settingsMenu.addItem(withTitle: "Quit", action: #selector(quitTapped), keyEquivalent: "")
-            .target = self
-        settingsButton.menu = settingsMenu
-
+        settingsButton.action = #selector(settingsMenuTapped)
         view.addSubview(settingsButton)
+
+        aboutButton.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "About")
+        aboutButton.isBordered = false
+        aboutButton.contentTintColor = .lightGray
+        aboutButton.translatesAutoresizingMaskIntoConstraints = false
+        aboutButton.target = self
+        aboutButton.action = #selector(aboutTapped)
+        view.addSubview(aboutButton)
 
         // Album art
         albumArt.wantsLayer = true
@@ -270,11 +275,21 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         let bottomRowY = view.topAnchor
 
         NSLayoutConstraint.activate([
-            // Top row
-            settingsButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
-            settingsButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            settingsButton.widthAnchor.constraint(equalToConstant: 24),
-            settingsButton.heightAnchor.constraint(equalToConstant: 24),
+            // Button column (right side, top-aligned)
+            quitButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            quitButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            quitButton.widthAnchor.constraint(equalToConstant: 20),
+            quitButton.heightAnchor.constraint(equalToConstant: 20),
+
+            settingsButton.topAnchor.constraint(equalTo: quitButton.bottomAnchor, constant: 8),
+            settingsButton.trailingAnchor.constraint(equalTo: quitButton.trailingAnchor),
+            settingsButton.widthAnchor.constraint(equalToConstant: 20),
+            settingsButton.heightAnchor.constraint(equalToConstant: 20),
+
+            aboutButton.topAnchor.constraint(equalTo: settingsButton.bottomAnchor, constant: 8),
+            aboutButton.trailingAnchor.constraint(equalTo: quitButton.trailingAnchor),
+            aboutButton.widthAnchor.constraint(equalToConstant: 20),
+            aboutButton.heightAnchor.constraint(equalToConstant: 20),
 
             // Album art
             albumArt.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
@@ -285,24 +300,23 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             // Song + artist
             songLabel.topAnchor.constraint(equalTo: albumArt.topAnchor, constant: 4),
             songLabel.leadingAnchor.constraint(equalTo: albumArt.trailingAnchor, constant: 12),
-            songLabel.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
+            songLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
 
             artistLabel.topAnchor.constraint(equalTo: songLabel.bottomAnchor, constant: 2),
             artistLabel.leadingAnchor.constraint(equalTo: songLabel.leadingAnchor),
             artistLabel.trailingAnchor.constraint(equalTo: songLabel.trailingAnchor),
 
-            // Elapsed label + Progress bar + time label
-            elapsedLabel.centerYAnchor.constraint(equalTo: progressBar.centerYAnchor),
-            elapsedLabel.leadingAnchor.constraint(equalTo: songLabel.leadingAnchor),
-            elapsedLabel.widthAnchor.constraint(equalToConstant: 34),
-
+            // Progress bar (full content width)
             progressBar.topAnchor.constraint(equalTo: artistLabel.bottomAnchor, constant: 6),
-            progressBar.leadingAnchor.constraint(equalTo: elapsedLabel.trailingAnchor, constant: 6),
-            progressBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -56),
+            progressBar.leadingAnchor.constraint(equalTo: songLabel.leadingAnchor),
+            progressBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
 
-            timeLabel.centerYAnchor.constraint(equalTo: progressBar.centerYAnchor),
-            timeLabel.leadingAnchor.constraint(equalTo: progressBar.trailingAnchor, constant: 6),
-            timeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            // Time labels (below progress bar)
+            elapsedLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 2),
+            elapsedLabel.leadingAnchor.constraint(equalTo: progressBar.leadingAnchor),
+
+            timeLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 2),
+            timeLabel.trailingAnchor.constraint(equalTo: progressBar.trailingAnchor),
 
             // Bottom row — vertically centered between album art bottom (90) and pane bottom (130)
             historyToggleButton.topAnchor.constraint(equalTo: bottomRowY, constant: 99),
@@ -405,8 +419,10 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         offlineOverlay.isHidden = true
         view.addSubview(offlineOverlay)
 
-        // Keep settings button above the overlay
+        // Keep button column above the overlay
+        view.addSubview(quitButton, positioned: .above, relativeTo: offlineOverlay)
         view.addSubview(settingsButton, positioned: .above, relativeTo: offlineOverlay)
+        view.addSubview(aboutButton, positioned: .above, relativeTo: offlineOverlay)
 
         // Offline label with wifi.slash icon
         let attachment = NSTextAttachment()
@@ -598,14 +614,6 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         let newState = !isHistoryOpen
         setHistoryOpen(newState)
         onHistoryToggled?(newState)
-    }
-
-    @objc private func settingsTapped() {
-        settingsButton.menu?.popUp(
-            positioning: nil,
-            at: NSPoint(x: 0, y: settingsButton.bounds.height + 2),
-            in: settingsButton
-        )
     }
 
     @objc private func aboutTapped() { onAbout?() }

@@ -1,7 +1,8 @@
 #if !TESTING
 import AppKit
 
-class ScrollingTitle {
+class ScrollingTitle: NSObject {
+    private var statusItem: NSStatusItem?
     private var animationTimer: Timer?
     private var repeatTimer: Timer?
     private var animationStart: CFTimeInterval = 0
@@ -12,15 +13,26 @@ class ScrollingTitle {
     private var currentSong = ""
     private var currentArtist = ""
     private var isPlaying = false
-    private weak var statusItem: NSStatusItem?
-    private var button: NSStatusBarButton? { statusItem?.button }
-    var isEnabled = true
+
+    var onClick: (() -> Void)?
+
+    var isEnabled = true {
+        didSet {
+            if isEnabled {
+                if !fullText.isEmpty { ensureItem() }
+            } else {
+                removeItem()
+            }
+        }
+    }
 
     private let visibleWidth: CGFloat = 220
     private let scrollSpeed: CGFloat = 30 // pixels per second
     private let repeatInterval: TimeInterval = 30
     private let fps: TimeInterval = 1.0 / 30.0
     private let gapWidth: CGFloat = 40
+
+    private var button: NSStatusBarButton? { statusItem?.button }
 
     private var textFont: NSFont {
         NSFont.systemFont(ofSize: NSFont.systemFontSize)
@@ -30,9 +42,31 @@ class ScrollingTitle {
         [.font: textFont, .foregroundColor: NSColor.controlTextColor]
     }
 
-    func attach(to statusItem: NSStatusItem) {
-        self.statusItem = statusItem
+    // MARK: - Item Lifecycle
+
+    private func ensureItem() {
+        guard statusItem == nil, isEnabled else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(handleClick)
+            button.sendAction(on: .leftMouseDown)
+        }
+        statusItem = item
     }
+
+    private func removeItem() {
+        guard let item = statusItem else { return }
+        stopAll()
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+    }
+
+    @objc private func handleClick() {
+        onClick?()
+    }
+
+    // MARK: - Public API
 
     func update(song: String, artist: String) {
         stopAll()
@@ -41,9 +75,9 @@ class ScrollingTitle {
         fullText = "🎵 \(artist) — \(song)"
         isPlaying = true
 
-        if !isEnabled {
-            return
-        }
+        if !isEnabled { return }
+
+        ensureItem()
 
         let textWidth = measureText(fullText)
         fullTextWidth = textWidth
@@ -52,7 +86,6 @@ class ScrollingTitle {
             return
         }
 
-        // Scroll distance = one copy width + gap so second copy lands where first started
         scrollDistance = textWidth + gapWidth
         startAnimation()
     }
@@ -60,7 +93,7 @@ class ScrollingTitle {
     func pause() {
         isPlaying = false
         stopAll()
-        if isEnabled {
+        if isEnabled && statusItem != nil {
             showStaticStart()
         }
     }
@@ -69,9 +102,9 @@ class ScrollingTitle {
         guard !fullText.isEmpty else { return }
         isPlaying = true
 
-        if !isEnabled {
-            return
-        }
+        if !isEnabled { return }
+
+        ensureItem()
 
         let textWidth = measureText(fullText)
         fullTextWidth = textWidth
@@ -91,9 +124,7 @@ class ScrollingTitle {
         currentSong = ""
         currentArtist = ""
         isPlaying = false
-        button?.image = nil
-        button?.title = ""
-        statusItem?.length = NSStatusItem.variableLength
+        removeItem()
     }
 
     // MARK: - Animation
@@ -103,8 +134,7 @@ class ScrollingTitle {
         animationDuration = Double(scrollDistance) / Double(scrollSpeed)
         animationStart = CACurrentMediaTime()
 
-        // Set fixed width for scrolling
-        statusItem?.length = visibleWidth + 24 // padding for status item margins
+        statusItem?.length = visibleWidth + 24
         renderText(at: 0)
 
         animationTimer = Timer.scheduledTimer(withTimeInterval: fps, repeats: true) { [weak self] _ in
@@ -126,7 +156,6 @@ class ScrollingTitle {
             animationTimer?.invalidate()
             animationTimer = nil
 
-            // Reset to start (visually identical) and schedule repeat
             renderText(at: 0)
             repeatTimer = Timer.scheduledTimer(withTimeInterval: repeatInterval, repeats: false) { [weak self] _ in
                 guard let self = self, self.isPlaying else { return }
@@ -145,7 +174,6 @@ class ScrollingTitle {
         image.lockFocus()
 
         let y = -textFont.descender
-        // Draw two copies at exact pixel positions so scroll lands perfectly
         (fullText as NSString).draw(at: NSPoint(x: -offset, y: y), withAttributes: textAttributes)
         (fullText as NSString).draw(at: NSPoint(x: -offset + fullTextWidth + gapWidth, y: y), withAttributes: textAttributes)
 
@@ -177,7 +205,6 @@ class ScrollingTitle {
             return
         }
 
-        // Show beginning of text as image, fixed width
         statusItem?.length = visibleWidth + 24
         renderText(at: 0)
     }

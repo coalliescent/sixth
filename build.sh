@@ -78,4 +78,59 @@ if [ ! -f sixth-creds ] || [ Tools/sixth-creds.swift -nt sixth-creds ]; then
   swiftc -swift-version 5 -o sixth-creds Tools/sixth-creds.swift
 fi
 
+# Build UI test app (no keychain — uses file-based credentials)
+echo "Building Sixth-UITest.app..."
+swiftc -parse-as-library -DUI_TESTING \
+  -framework AppKit -framework AVFoundation -framework Carbon \
+  -framework Network -framework UserNotifications \
+  -swift-version 5 -o Sixth-UITest Sources/*.swift
+
+UI_BUNDLE="Sixth-UITest.app"
+rm -rf "$UI_BUNDLE"
+mkdir -p "$UI_BUNDLE/Contents/MacOS" "$UI_BUNDLE/Contents/Resources"
+mv Sixth-UITest "$UI_BUNDLE/Contents/MacOS/Sixth-UITest"
+cp AppIcon.icns "$UI_BUNDLE/Contents/Resources/AppIcon.icns"
+
+cat > "$UI_BUNDLE/Contents/Info.plist" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.sixth.pandora.uitest</string>
+  <key>CFBundleName</key>
+  <string>Sixth-UITest</string>
+  <key>CFBundleExecutable</key>
+  <string>Sixth-UITest</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
+PLIST
+echo "Built: ./$UI_BUNDLE"
+
+# Build UI test harness
+if [ ! -f sixth-ui-test ] || [ Tools/ui-test-anchor.swift -nt sixth-ui-test ]; then
+  echo "Building UI test harness..."
+  swiftc -swift-version 5 -o sixth-ui-test \
+    -framework AppKit -framework ApplicationServices -framework CoreGraphics \
+    Tools/ui-test-anchor.swift
+fi
+
 echo "Done!"

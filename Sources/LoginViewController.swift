@@ -7,8 +7,14 @@ class LoginViewController: NSViewController {
     private let loginButton = NSButton()
     private let errorLabel = NSTextField(labelWithString: "")
     private let spinner = NSProgressIndicator()
+    private let quitButton = NSButton()
+    private let settingsButton = NSButton()
+    private let aboutButton = NSButton()
 
     var onLogin: ((String, String) -> Void)?
+    var onQuit: (() -> Void)?
+    var onSettings: (() -> Void)?
+    var onAbout: (() -> Void)?
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 180))
@@ -65,6 +71,31 @@ class LoginViewController: NSViewController {
         spinner.isHidden = true
         view.addSubview(spinner)
 
+        // Button column (right side): quit, settings, about
+        quitButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Quit")
+        quitButton.isBordered = false
+        quitButton.contentTintColor = .lightGray
+        quitButton.translatesAutoresizingMaskIntoConstraints = false
+        quitButton.target = self
+        quitButton.action = #selector(quitTapped)
+        view.addSubview(quitButton)
+
+        settingsButton.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: "Settings")
+        settingsButton.isBordered = false
+        settingsButton.contentTintColor = .lightGray
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        settingsButton.target = self
+        settingsButton.action = #selector(settingsTapped)
+        view.addSubview(settingsButton)
+
+        aboutButton.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "About")
+        aboutButton.isBordered = false
+        aboutButton.contentTintColor = .lightGray
+        aboutButton.translatesAutoresizingMaskIntoConstraints = false
+        aboutButton.target = self
+        aboutButton.action = #selector(aboutTapped)
+        view.addSubview(aboutButton)
+
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
             titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -87,6 +118,22 @@ class LoginViewController: NSViewController {
 
             spinner.centerYAnchor.constraint(equalTo: loginButton.centerYAnchor),
             spinner.leadingAnchor.constraint(equalTo: loginButton.trailingAnchor, constant: 8),
+
+            // Button column (right side, centered vertically)
+            quitButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 52),
+            quitButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            quitButton.widthAnchor.constraint(equalToConstant: 20),
+            quitButton.heightAnchor.constraint(equalToConstant: 20),
+
+            settingsButton.topAnchor.constraint(equalTo: quitButton.bottomAnchor, constant: 8),
+            settingsButton.trailingAnchor.constraint(equalTo: quitButton.trailingAnchor),
+            settingsButton.widthAnchor.constraint(equalToConstant: 20),
+            settingsButton.heightAnchor.constraint(equalToConstant: 20),
+
+            aboutButton.topAnchor.constraint(equalTo: settingsButton.bottomAnchor, constant: 8),
+            aboutButton.trailingAnchor.constraint(equalTo: quitButton.trailingAnchor),
+            aboutButton.widthAnchor.constraint(equalToConstant: 20),
+            aboutButton.heightAnchor.constraint(equalToConstant: 20),
         ])
     }
 
@@ -122,5 +169,9 @@ class LoginViewController: NSViewController {
             spinner.stopAnimation(nil)
         }
     }
+
+    @objc private func quitTapped() { onQuit?() }
+    @objc private func settingsTapped() { onSettings?() }
+    @objc private func aboutTapped() { onAbout?() }
 }
 #endif

@@ -4,7 +4,7 @@ import Network
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private var statusItem: NSStatusItem!
+    private var statusItem: NSStatusItem!      // permanent app icon, popover anchor
     private let popover = NSPopover()
 
     // Core
@@ -20,6 +20,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var stationListVC: StationListViewController!
     private var settingsVC: SettingsViewController!
 
+    // Popover dismissal monitors
+    private var clickOutsideMonitor: Any?
+    private var appDeactivationObserver: Any?
+
     // Network
     private let networkMonitor = NWPathMonitor()
     private var isNetworkAvailable = true
@@ -31,18 +35,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var isFetchingTracks = false
     private var currentTrackLiked = false
     private var currentFeedbackId: String?
+    private var settingsFromLogin = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Status bar item
+        // Permanent app icon (popover anchors here)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Sixth")
+            if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+               let icon = NSImage(contentsOf: iconURL) {
+                icon.size = NSSize(width: 18, height: 18)
+                button.image = icon
+            } else {
+                button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Sixth")
+            }
             button.action = #selector(togglePopover)
             button.target = self
+            button.sendAction(on: .leftMouseDown)
         }
 
         // Popover
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.delegate = self
         popover.contentSize = NSSize(width: 360, height: 130)
         popover.animates = false
@@ -61,15 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             scrollingTitle.isEnabled = saved
         }
 
-        scrollingTitle.attach(to: statusItem)
-
-        if let button = statusItem.button {
-            button.postsFrameChangedNotifications = true
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(statusButtonFrameChanged),
-                name: NSView.frameDidChangeNotification, object: button
-            )
-        }
+        scrollingTitle.onClick = { [weak self] in self?.togglePopover() }
 
         // Setup hotkeys
         hotKeyManager.onPlayPause = { [weak self] in
@@ -213,6 +217,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         loginVC.onLogin = { [weak self] username, password in
             self?.performLogin(username: username, password: password)
         }
+        loginVC.onQuit = { NSApp.terminate(nil) }
+        loginVC.onSettings = { [weak self] in self?.showSettings() }
+        loginVC.onAbout = { [weak self] in self?.showAbout() }
 
         // Station list
         stationListVC = StationListViewController()
@@ -229,7 +236,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.signOut()
         }
         settingsVC.onBack = { [weak self] in
-            self?.showPlayer()
+            guard let self = self else { return }
+            if self.settingsFromLogin {
+                self.showLogin()
+            } else {
+                self.showPlayer()
+            }
         }
         settingsVC.onNotificationsToggled = { [weak self] enabled in
             self?.notificationManager.isEnabled = enabled
@@ -243,11 +255,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.scrollingTitle.resume()
             } else {
                 self.scrollingTitle.pause()
-                if let button = self.statusItem.button {
-                    button.title = ""
-                    button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Sixth")
-                }
-                self.statusItem.length = NSStatusItem.variableLength
             }
         }
     }
@@ -294,10 +301,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             iconImage.size = NSSize(width: 128, height: 128)
             alert.icon = iconImage
         }
+
+        let link = NSTextView()
+        link.isEditable = false
+        link.isSelectable = true
+        link.drawsBackground = false
+        link.textContainerInset = .zero
+        let url = "https://github.com/coalliescent/sixth"
+        let attrStr = NSMutableAttributedString(string: url)
+        attrStr.addAttributes([
+            .link: URL(string: url)!,
+            .font: NSFont.systemFont(ofSize: 13),
+        ], range: NSRange(location: 0, length: url.count))
+        link.textStorage?.setAttributedString(attrStr)
+        link.alignment = .center
+        link.frame = NSRect(x: 0, y: 0, width: 280, height: 20)
+        alert.accessoryView = link
+
         alert.runModal()
     }
 
     private func showSettings() {
+        settingsFromLogin = popover.contentViewController === loginVC
         settingsVC.notificationsEnabled = notificationManager.isEnabled
         settingsVC.scrollingTitleEnabled = scrollingTitle.isEnabled
         popover.contentViewController = settingsVC
@@ -519,11 +544,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         playerVC.showOffline()
         playerVC.updatePlayState(isPlaying: false)
         scrollingTitle.setIdle()
-        if let button = statusItem.button {
-            button.title = ""
-            button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Sixth")
-        }
-        statusItem.length = NSStatusItem.variableLength
         print("[App] entered offline state")
     }
 
@@ -678,46 +698,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         UserDefaults.standard.set(false, forKey: "historyTrayOpen")
         playerVC.setHistoryOpen(false)
         scrollingTitle.setIdle()
-        if let button = statusItem.button {
-            button.title = ""
-            button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Sixth")
-        }
         showLogin()
     }
 
     // MARK: - Popover
 
-    private func anchorRect(for button: NSStatusBarButton) -> NSRect {
-        if statusItem.length != NSStatusItem.variableLength {
-            return NSRect(x: button.bounds.maxX - 2, y: 0, width: 1, height: button.bounds.height)
-        } else {
-            return button.bounds
-        }
-    }
-
     @objc private func togglePopover() {
         if popover.isShown {
-            popover.performClose(nil)
+            closePopover()
         } else if let button = statusItem.button {
-            popover.show(relativeTo: anchorRect(for: button), of: button, preferredEdge: .minY)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
 
             // Refresh play state after show so it runs after lazy viewDidLoad/setupUI
             if popover.contentViewController === playerVC {
                 playerVC.updatePlayState(isPlaying: audioPlayer.isPlaying)
             }
+
+            // Monitor clicks outside the app to dismiss
+            clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                self?.closePopover()
+            }
+
+            // Monitor app deactivation (Cmd-Tab, click desktop, etc.)
+            appDeactivationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.closePopover()
+                }
+            }
         }
     }
 
-    @objc private func statusButtonFrameChanged(_ note: Notification) {
-        guard popover.isShown, let button = statusItem.button else { return }
-        popover.show(relativeTo: anchorRect(for: button), of: button, preferredEdge: .minY)
+    private func closePopover() {
+        popover.performClose(nil)
     }
 
     func popoverDidClose(_ notification: Notification) {
+        if let monitor = clickOutsideMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickOutsideMonitor = nil
+        }
+        if let observer = appDeactivationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            appDeactivationObserver = nil
+        }
+
         if popover.contentViewController !== playerVC &&
            popover.contentViewController !== loginVC {
-            showPlayer()
+            if settingsFromLogin {
+                showLogin()
+            } else {
+                showPlayer()
+            }
         }
     }
 
