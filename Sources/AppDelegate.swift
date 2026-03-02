@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var loginVC: LoginViewController!
     private var stationListVC: StationListViewController!
     private var settingsVC: SettingsViewController!
+    private var aboutVC: AboutViewController!
 
     // Popover dismissal monitors
     private var clickOutsideMonitor: Any?
@@ -35,8 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var isFetchingTracks = false
     private var currentTrackLiked = false
     private var currentFeedbackId: String?
-    private var settingsFromLogin = false
     private var pendingScrollingTitleHide = false
+    private var overlayClosedHistory = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Permanent app icon (popover anchors here)
@@ -242,13 +243,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settingsVC.onSignOut = { [weak self] in
             self?.signOut()
         }
-        settingsVC.onBack = { [weak self] in
-            guard let self = self else { return }
-            if self.settingsFromLogin {
-                self.showLogin()
-            } else {
-                self.showPlayer()
-            }
+        settingsVC.onClose = { [weak self] in
+            self?.dismissSettingsOverlay()
         }
         settingsVC.onNotificationsToggled = { [weak self] enabled in
             self?.notificationManager.isEnabled = enabled
@@ -263,6 +259,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             } else {
                 self.scrollingTitle.pause()
             }
+        }
+
+        // About
+        aboutVC = AboutViewController()
+        aboutVC.onClose = { [weak self] in
+            self?.dismissAboutOverlay()
         }
     }
 
@@ -298,42 +300,118 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "Sixth"
-        alert.informativeText = "A lightweight Pandora client for macOS."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let iconImage = NSImage(contentsOf: iconURL) {
-            iconImage.size = NSSize(width: 128, height: 128)
-            alert.icon = iconImage
+        // Dismiss settings overlay if showing
+        dismissSettingsOverlay()
+        // Don't double-show
+        guard aboutVC.view.superview == nil else { return }
+
+        // Collapse history tray if open (will restore on dismiss)
+        if playerVC.isHistoryOpen {
+            overlayClosedHistory = true
+            playerVC.setHistoryOpen(false)
+            popover.contentSize = playerVC.preferredContentSize
         }
 
-        let link = NSTextView()
-        link.isEditable = false
-        link.isSelectable = true
-        link.drawsBackground = false
-        link.textContainerInset = .zero
-        let url = "https://github.com/coalliescent/sixth"
-        let attrStr = NSMutableAttributedString(string: url)
-        attrStr.addAttributes([
-            .link: URL(string: url)!,
-            .font: NSFont.systemFont(ofSize: 13),
-        ], range: NSRange(location: 0, length: url.count))
-        link.textStorage?.setAttributedString(attrStr)
-        link.alignment = .center
-        link.frame = NSRect(x: 0, y: 0, width: 280, height: 20)
-        alert.accessoryView = link
+        let overlay = aboutVC.view
+        overlay.translatesAutoresizingMaskIntoConstraints = false
 
-        alert.runModal()
+        let host: NSView
+        if popover.contentViewController === playerVC {
+            host = playerVC.view
+        } else if popover.contentViewController === loginVC {
+            host = loginVC.view
+        } else {
+            return
+        }
+
+        host.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: host.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        nudgeMouseTracking(in: host)
+    }
+
+    private func dismissAboutOverlay() {
+        guard aboutVC.view.superview != nil else { return }
+        aboutVC.view.removeFromSuperview()
+        restoreHistoryIfNeeded()
     }
 
     private func showSettings() {
-        settingsFromLogin = popover.contentViewController === loginVC
+        // Dismiss about overlay if showing
+        dismissAboutOverlay()
+        // Don't double-show
+        guard settingsVC.view.superview == nil else { return }
+
+        // Collapse history tray if open (will restore on dismiss)
+        if playerVC.isHistoryOpen {
+            overlayClosedHistory = true
+            playerVC.setHistoryOpen(false)
+            popover.contentSize = playerVC.preferredContentSize
+        }
+
+        settingsVC.username = CredentialStore.loadCredentials()?.username ?? ""
         settingsVC.notificationsEnabled = notificationManager.isEnabled
         settingsVC.scrollingTitleEnabled = scrollingTitle.isEnabled
-        popover.contentViewController = settingsVC
-        popover.contentSize = settingsVC.preferredContentSize
+
+        let overlay = settingsVC.view
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+
+        let host: NSView
+        if popover.contentViewController === playerVC {
+            host = playerVC.view
+        } else if popover.contentViewController === loginVC {
+            host = loginVC.view
+        } else {
+            return
+        }
+
+        host.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: host.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        nudgeMouseTracking(in: host)
+    }
+
+    private func dismissSettingsOverlay() {
+        guard settingsVC.view.superview != nil else { return }
+        settingsVC.view.removeFromSuperview()
+        restoreHistoryIfNeeded()
+    }
+
+    private func restoreHistoryIfNeeded() {
+        guard overlayClosedHistory else { return }
+        overlayClosedHistory = false
+        guard popover.contentViewController === playerVC else { return }
+        playerVC.setHistoryOpen(true)
+        popover.contentSize = playerVC.preferredContentSize
+    }
+
+    /// Synthesize a mouse-moved event so AppKit updates tracking areas for
+    /// newly added overlay views, allowing an immediate second click to hit
+    /// the close button without requiring the user to move the mouse first.
+    private func nudgeMouseTracking(in view: NSView) {
+        guard let window = view.window else { return }
+        let loc = window.mouseLocationOutsideOfEventStream
+        if let event = NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: loc,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        ) {
+            window.sendEvent(event)
+        }
     }
 
     // MARK: - Auth
@@ -556,17 +634,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func exitOfflineState() {
         playerVC.hideOffline()
-        guard let station = currentStation, isLoggedIn else { return }
-        playerVC.showLoading()
+        guard isLoggedIn else { return }
         Task {
             do {
                 try await self.reAuthenticate()
-                let tracks = try await self.api.getPlaylist(stationToken: station.stationToken)
-                print("[App] network recovery: got \(tracks.count) tracks")
-                self.enqueueAndPrefetch(tracks)
+                print("[App] network restored, session ready")
             } catch {
-                print("[App] network recovery failed: \(error)")
-                self.playerVC.showError("Failed to resume playback")
+                print("[App] network recovery auth failed: \(error)")
             }
         }
     }
@@ -696,6 +770,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: - Sign Out
 
     private func signOut() {
+        overlayClosedHistory = false
+        settingsVC.view.removeFromSuperview()
+        aboutVC.view.removeFromSuperview()
         audioPlayer.stop()
         Task { await api.logout() }
         CredentialStore.deleteCredentials()
@@ -757,13 +834,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             pendingScrollingTitleHide = false
         }
 
+        // Dismiss any open overlays (don't restore history — popover is closing)
+        overlayClosedHistory = false
+        settingsVC.view.removeFromSuperview()
+        aboutVC.view.removeFromSuperview()
+
         if popover.contentViewController !== playerVC &&
            popover.contentViewController !== loginVC {
-            if settingsFromLogin {
-                showLogin()
-            } else {
-                showPlayer()
-            }
+            showPlayer()
         }
     }
 
