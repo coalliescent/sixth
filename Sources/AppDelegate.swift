@@ -58,7 +58,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Popover
         popover.behavior = .applicationDefined
         popover.delegate = self
-        popover.contentSize = NSSize(width: 360, height: 130)
+        popover.contentSize = NSSize(width: 360, height: 134)
         popover.animates = false
 
         // Services
@@ -234,8 +234,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         stationListVC.onStationSelected = { [weak self] station in
             self?.selectStation(station)
         }
-        stationListVC.onBack = { [weak self] in
-            self?.showPlayer()
+        stationListVC.onClose = { [weak self] in
+            self?.dismissStationsOverlay()
+        }
+        stationListVC.onRefresh = { [weak self] in
+            self?.fetchStations()
         }
 
         // Settings
@@ -284,6 +287,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func showStationList() {
+        // Dismiss other overlays
+        dismissSettingsOverlay()
+        dismissAboutOverlay()
+        // Don't double-show
+        guard stationListVC.view.superview == nil else { return }
+
+        // Collapse history tray if open (will restore on dismiss)
+        if playerVC.isHistoryOpen {
+            overlayClosedHistory = true
+            playerVC.setHistoryOpen(false)
+            popover.contentSize = playerVC.preferredContentSize
+        }
+
+        stationListVC.currentStationToken = currentStation?.stationToken
+
+        // Use cached stations if available, otherwise show loading spinner
+        if stations.isEmpty {
+            stationListVC.showLoading()
+        } else {
+            stationListVC.update(stations: stations)
+        }
+
+        // Resize popover — must set preferredContentSize so the content view resizes
+        let stationsSize = NSSize(width: 360, height: 460)
+        playerVC.preferredContentSize = stationsSize
+        popover.contentSize = stationsSize
+
+        let overlay = stationListVC.view
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        playerVC.view.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: playerVC.view.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: playerVC.view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: playerVC.view.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: playerVC.view.bottomAnchor),
+        ])
+        nudgeMouseTracking(in: playerVC.view)
+
+        // Fetch on first open (no cached stations)
+        if stations.isEmpty {
+            fetchStations()
+        }
+    }
+
+    private func fetchStations() {
+        stationListVC.showLoading()
         Task {
             do {
                 let stationList = try await api.getStationList()
@@ -291,17 +340,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.stationListVC.update(stations: stationList)
             } catch {
                 print("Failed to fetch stations: \(error)")
-                self.playerVC.showError("Failed to load stations")
+                // If we had cached stations, restore them; otherwise dismiss
+                if self.stations.isEmpty {
+                    self.dismissStationsOverlay()
+                    self.playerVC.showError("Failed to load stations")
+                } else {
+                    self.stationListVC.update(stations: self.stations)
+                }
             }
         }
-        stationListVC.currentStationToken = currentStation?.stationToken
-        popover.contentViewController = stationListVC
-        popover.contentSize = stationListVC.preferredContentSize
+    }
+
+    private func dismissStationsOverlay() {
+        guard stationListVC.view.superview != nil else { return }
+        stationListVC.view.removeFromSuperview()
+        if overlayClosedHistory {
+            restoreHistoryIfNeeded()
+        } else {
+            let restoreSize = NSSize(width: 360, height: 134)
+            playerVC.preferredContentSize = restoreSize
+            popover.contentSize = restoreSize
+        }
     }
 
     private func showAbout() {
-        // Dismiss settings overlay if showing
+        // Dismiss other overlays if showing
         dismissSettingsOverlay()
+        dismissStationsOverlay()
         // Don't double-show
         guard aboutVC.view.superview == nil else { return }
 
@@ -341,8 +406,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func showSettings() {
-        // Dismiss about overlay if showing
+        // Dismiss other overlays if showing
         dismissAboutOverlay()
+        dismissStationsOverlay()
         // Don't double-show
         guard settingsVC.view.superview == nil else { return }
 
@@ -473,6 +539,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: - Station
 
     private func selectStation(_ station: Station) {
+        dismissStationsOverlay()
         currentStation = station
         UserDefaults.standard.set(station.stationToken, forKey: "lastStationToken")
         // Track recently-played order (most recent first)
@@ -710,7 +777,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func toggleHistory(isOpen: Bool) {
         UserDefaults.standard.set(isOpen, forKey: "historyTrayOpen")
-        let newSize = NSSize(width: 360, height: isOpen ? 390 : 130)
+        let newSize = NSSize(width: 360, height: isOpen ? 394 : 134)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -773,6 +840,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         overlayClosedHistory = false
         settingsVC.view.removeFromSuperview()
         aboutVC.view.removeFromSuperview()
+        stationListVC.view.removeFromSuperview()
         audioPlayer.stop()
         Task { await api.logout() }
         CredentialStore.deleteCredentials()
@@ -838,9 +906,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         overlayClosedHistory = false
         settingsVC.view.removeFromSuperview()
         aboutVC.view.removeFromSuperview()
+        stationListVC.view.removeFromSuperview()
 
-        if popover.contentViewController !== playerVC &&
-           popover.contentViewController !== loginVC {
+        // Restore player size so next open isn't stuck at overlay height
+        if popover.contentViewController === playerVC {
+            let historyOpen = UserDefaults.standard.bool(forKey: "historyTrayOpen")
+            playerVC.setHistoryOpen(historyOpen)
+            let size = playerVC.preferredContentSize
+            popover.contentSize = size
+        } else if popover.contentViewController !== loginVC {
             showPlayer()
         }
     }

@@ -7,7 +7,7 @@ class AboutViewController: NSViewController {
     var onClose: (() -> Void)?
 
     override func loadView() {
-        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 360, height: 130))
+        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 360, height: 134))
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active

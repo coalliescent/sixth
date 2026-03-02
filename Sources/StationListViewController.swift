@@ -4,22 +4,25 @@ import AppKit
 class StationListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
-    private let backButton = NSButton()
+    private let closeButton = NSButton()
+    private let refreshButton = NSButton()
     private let sortControl = NSSegmentedControl(labels: ["Recent", "Added", "A–Z"], trackingMode: .selectOne, target: nil, action: nil)
     private let emptyLabel = NSTextField(labelWithString: "No stations found")
+    private let loadingSpinner = NSProgressIndicator()
     private var stations: [Station] = []       // current display order
     private var recentOrder: [Station] = []    // original API order
 
     var currentStationToken: String?
     var onStationSelected: ((Station) -> Void)?
-    var onBack: (() -> Void)?
+    var onClose: (() -> Void)?
+    var onRefresh: (() -> Void)?
 
     override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 300))
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(white: 0.15, alpha: 1).cgColor
-        self.view = container
-        self.preferredContentSize = NSSize(width: 360, height: 300)
+        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 360, height: 460))
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        self.view = effect
     }
 
     override func viewDidLoad() {
@@ -28,20 +31,14 @@ class StationListViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func setupUI() {
-        // Header
-        let headerLabel = NSTextField(labelWithString: "Stations")
-        headerLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        headerLabel.textColor = .white
-        headerLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(headerLabel)
-
-        backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
-        backButton.isBordered = false
-        backButton.contentTintColor = .white
-        backButton.translatesAutoresizingMaskIntoConstraints = false
-        backButton.target = self
-        backButton.action = #selector(backTapped)
-        view.addSubview(backButton)
+        // Refresh button (upper left)
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        refreshButton.isBordered = false
+        refreshButton.contentTintColor = .lightGray
+        refreshButton.translatesAutoresizingMaskIntoConstraints = false
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshTapped)
+        view.addSubview(refreshButton)
 
         // Sort segmented control
         sortControl.selectedSegment = 0
@@ -58,7 +55,7 @@ class StationListViewController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.headerView = nil
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.backgroundColor = NSColor(white: 0.15, alpha: 1)
+        tableView.backgroundColor = .clear
         tableView.rowHeight = 44
         tableView.style = .plain
         tableView.target = self
@@ -70,22 +67,49 @@ class StationListViewController: NSViewController, NSTableViewDataSource, NSTabl
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scrollView)
 
+        // Close button (floats above table, added after scrollView for z-order)
+        closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")
+        closeButton.isBordered = false
+        closeButton.contentTintColor = .lightGray
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.target = self
+        closeButton.action = #selector(closeTapped)
+        closeButton.wantsLayer = true
+        closeButton.shadow = NSShadow()
+        closeButton.layer?.shadowColor = NSColor.black.cgColor
+        closeButton.layer?.shadowOpacity = 0.6
+        closeButton.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        closeButton.layer?.shadowRadius = 3
+        view.addSubview(closeButton)
+
+        // Loading spinner (visible by default until stations arrive)
+        loadingSpinner.style = .spinning
+        loadingSpinner.controlSize = .small
+        loadingSpinner.translatesAutoresizingMaskIntoConstraints = false
+        loadingSpinner.startAnimation(nil)
+        view.addSubview(loadingSpinner)
+
         NSLayoutConstraint.activate([
-            backButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            backButton.widthAnchor.constraint(equalToConstant: 20),
-            backButton.heightAnchor.constraint(equalToConstant: 20),
+            refreshButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            refreshButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            refreshButton.widthAnchor.constraint(equalToConstant: 20),
+            refreshButton.heightAnchor.constraint(equalToConstant: 20),
 
-            headerLabel.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-            headerLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            closeButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 94),
+            closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            closeButton.widthAnchor.constraint(equalToConstant: 20),
+            closeButton.heightAnchor.constraint(equalToConstant: 20),
 
-            sortControl.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 8),
+            sortControl.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
             sortControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
             scrollView.topAnchor.constraint(equalTo: sortControl.bottomAnchor, constant: 8),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            loadingSpinner.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            loadingSpinner.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
         ])
 
         emptyLabel.font = .systemFont(ofSize: 13)
@@ -100,7 +124,18 @@ class StationListViewController: NSViewController, NSTableViewDataSource, NSTabl
         ])
     }
 
+    func showLoading() {
+        stations = []
+        recentOrder = []
+        tableView.reloadData()
+        emptyLabel.isHidden = true
+        loadingSpinner.isHidden = false
+        loadingSpinner.startAnimation(nil)
+    }
+
     func update(stations: [Station]) {
+        loadingSpinner.stopAnimation(nil)
+        loadingSpinner.isHidden = true
         self.recentOrder = stations.filter { $0.isQuickMix != true }
         applySortOrder()
     }
@@ -208,8 +243,12 @@ class StationListViewController: NSViewController, NSTableViewDataSource, NSTabl
         onStationSelected?(stations[row])
     }
 
-    @objc private func backTapped() {
-        onBack?()
+    @objc private func closeTapped() {
+        onClose?()
+    }
+
+    @objc private func refreshTapped() {
+        onRefresh?()
     }
 }
 #endif

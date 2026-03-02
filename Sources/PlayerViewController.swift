@@ -99,11 +99,12 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     var onHistoryThumbsDown: ((String) -> Void)?
 
     override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 130))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 134))
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor(white: 0.15, alpha: 1).cgColor
+        container.autoresizingMask = [.width, .height]
         self.view = container
-        self.preferredContentSize = NSSize(width: 360, height: 130)
+        self.preferredContentSize = NSSize(width: 360, height: 134)
     }
 
     override func viewDidLoad() {
@@ -260,9 +261,9 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         nextButton.action = #selector(nextTapped)
         view.addSubview(nextButton)
 
-        stationsButton.title = "Stations"
-        stationsButton.bezelStyle = .rounded
-        stationsButton.controlSize = .small
+        stationsButton.image = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right", accessibilityDescription: "Stations")
+        stationsButton.isBordered = false
+        stationsButton.contentTintColor = .lightGray
         stationsButton.translatesAutoresizingMaskIntoConstraints = false
         stationsButton.target = self
         stationsButton.action = #selector(stationsTapped)
@@ -291,6 +292,11 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             aboutButton.widthAnchor.constraint(equalToConstant: 20),
             aboutButton.heightAnchor.constraint(equalToConstant: 20),
 
+            stationsButton.topAnchor.constraint(equalTo: aboutButton.bottomAnchor, constant: 8),
+            stationsButton.trailingAnchor.constraint(equalTo: quitButton.trailingAnchor),
+            stationsButton.widthAnchor.constraint(equalToConstant: 20),
+            stationsButton.heightAnchor.constraint(equalToConstant: 20),
+
             // Album art
             albumArt.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             albumArt.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -318,7 +324,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             timeLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 2),
             timeLabel.trailingAnchor.constraint(equalTo: progressBar.trailingAnchor),
 
-            // Bottom row — vertically centered between album art bottom (90) and pane bottom (130)
+            // Bottom row — vertically centered between album art bottom (90) and pane bottom (134)
             historyToggleButton.topAnchor.constraint(equalTo: bottomRowY, constant: 99),
             historyToggleButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             historyToggleButton.widthAnchor.constraint(equalToConstant: 24),
@@ -354,9 +360,6 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             thumbsUpButton.leadingAnchor.constraint(equalTo: nextButton.trailingAnchor, constant: 10),
             thumbsUpButton.widthAnchor.constraint(equalToConstant: 26),
             thumbsUpButton.heightAnchor.constraint(equalToConstant: 26),
-
-            stationsButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
-            stationsButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         // History tray
@@ -390,7 +393,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         historyHeightConstraint = historyScrollView.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
-            historySeparator.topAnchor.constraint(equalTo: view.topAnchor, constant: 130),
+            historySeparator.topAnchor.constraint(equalTo: view.topAnchor, constant: 134),
             historySeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             historySeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             historySeparator.heightAnchor.constraint(equalToConstant: 1),
@@ -423,6 +426,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         view.addSubview(quitButton, positioned: .above, relativeTo: offlineOverlay)
         view.addSubview(settingsButton, positioned: .above, relativeTo: offlineOverlay)
         view.addSubview(aboutButton, positioned: .above, relativeTo: offlineOverlay)
+        view.addSubview(stationsButton, positioned: .above, relativeTo: offlineOverlay)
 
         // Offline label with wifi.slash icon
         let attachment = NSTextAttachment()
@@ -564,7 +568,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         if open {
             historyTableView.reloadData()
         }
-        let newSize = NSSize(width: 360, height: open ? 390 : 130)
+        let newSize = NSSize(width: 360, height: open ? 394 : 134)
         self.preferredContentSize = newSize
     }
 
