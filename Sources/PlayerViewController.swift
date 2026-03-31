@@ -1,5 +1,8 @@
 #if !TESTING
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.sixth.app", category: "Player")
 
 // Shared image cache for album art and station icons
 final class ImageCache {
@@ -520,9 +523,11 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     func showError(_ message: String) {
         // Don't overwrite the now-playing display with background errors
         if !currentSong.isEmpty {
-            print("[Player] suppressing error overlay (track playing): \(message)")
+            logger.debug("suppressing error overlay (track playing): \(message, privacy: .public)")
             return
         }
+        loadingSpinner.stopAnimation(nil)
+        loadingSpinner.isHidden = true
         errorTimer?.invalidate()
         songLabel.stringValue = message
         songLabel.textColor = .systemRed
@@ -685,20 +690,22 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         cell.addSubview(artist)
 
         // Thumbs down button
+        let isDisliked = entry.songRating == -1
         let downBtn = NSButton(frame: NSRect(x: 278, y: 16, width: 20, height: 20))
-        downBtn.image = NSImage(systemSymbolName: "hand.thumbsdown", accessibilityDescription: "Dislike")
+        downBtn.image = NSImage(systemSymbolName: isDisliked ? "hand.thumbsdown.fill" : "hand.thumbsdown", accessibilityDescription: "Dislike")
         downBtn.isBordered = false
-        downBtn.contentTintColor = .gray
+        downBtn.contentTintColor = isDisliked ? .systemRed : .gray
         downBtn.identifier = NSUserInterfaceItemIdentifier(entry.trackToken)
         downBtn.target = self
         downBtn.action = #selector(historyThumbsDownTapped)
         cell.addSubview(downBtn)
 
         // Thumbs up button
+        let isLiked = entry.songRating == 1
         let upBtn = NSButton(frame: NSRect(x: 306, y: 16, width: 20, height: 20))
-        upBtn.image = NSImage(systemSymbolName: "hand.thumbsup", accessibilityDescription: "Like")
+        upBtn.image = NSImage(systemSymbolName: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup", accessibilityDescription: "Like")
         upBtn.isBordered = false
-        upBtn.contentTintColor = entry.songRating == 1 ? .systemGreen : .gray
+        upBtn.contentTintColor = isLiked ? .systemGreen : .gray
         upBtn.identifier = NSUserInterfaceItemIdentifier(entry.trackToken)
         upBtn.target = self
         upBtn.action = #selector(historyThumbsUpTapped)

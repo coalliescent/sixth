@@ -1,6 +1,9 @@
 #if !TESTING
 import Foundation
 import UserNotifications
+import os
+
+private let logger = Logger(subsystem: "com.sixth.app", category: "Notifications")
 
 class NotificationManager {
     var isEnabled = true
@@ -11,7 +14,7 @@ class NotificationManager {
             DispatchQueue.main.async {
                 self.hasPermission = granted
                 if let error = error {
-                    print("[Notifications] permission error: \(error.localizedDescription)")
+                    logger.error("permission error: \(error.localizedDescription, privacy: .public)")
                 }
             }
         }
@@ -33,7 +36,7 @@ class NotificationManager {
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("[Notifications] failed to post: \(error.localizedDescription)")
+                logger.error("failed to post: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

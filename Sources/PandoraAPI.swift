@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.sixth.app", category: "API")
 
 #if TESTING
 // For testing, allow injection of a custom URLSession
@@ -55,7 +58,7 @@ actor PandoraAPI {
 
         #if DEBUG
         if let debugStr = String(data: data, encoding: .utf8) {
-            print("[API auth.partnerLogin] \(debugStr.prefix(500))")
+            logger.debug("auth.partnerLogin: \(debugStr.prefix(500), privacy: .public)")
         }
         #endif
 
@@ -258,7 +261,7 @@ actor PandoraAPI {
 
         #if DEBUG
         if let debugStr = String(data: data, encoding: .utf8) {
-            print("[API \(method)] \(debugStr.prefix(500))")
+            logger.debug("\(method, privacy: .public): \(debugStr.prefix(500), privacy: .public)")
         }
         #endif
 

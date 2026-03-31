@@ -1,6 +1,9 @@
 #if !TESTING
 import AVFoundation
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.sixth.app", category: "AudioPlayer")
 
 @MainActor
 class AudioPlayer {
@@ -30,7 +33,7 @@ class AudioPlayer {
     // MARK: - Station
 
     func setStation(_ token: String) {
-        print("[AudioPlayer] setStation: \(token)")
+        logger.info("setStation: \(token, privacy: .public)")
         stationToken = token
         trackQueue.removeAll()
         consecutiveFailures = 0
@@ -40,7 +43,7 @@ class AudioPlayer {
     // MARK: - Queue Management
 
     func enqueue(_ tracks: [PlaylistItem]) {
-        print("[AudioPlayer] enqueue: \(tracks.count) tracks (queue was \(trackQueue.count))")
+        logger.info("enqueue: \(tracks.count) tracks (queue was \(self.trackQueue.count))")
         trackQueue.append(contentsOf: tracks)
         consecutiveFailures = 0
         if currentTrack == nil && !trackQueue.isEmpty {
@@ -49,7 +52,7 @@ class AudioPlayer {
     }
 
     func clearQueue() {
-        print("[AudioPlayer] clearQueue (had \(trackQueue.count) tracks)")
+        logger.info("clearQueue (had \(self.trackQueue.count) tracks)")
         trackQueue.removeAll()
         consecutiveFailures = 0
     }
@@ -58,7 +61,7 @@ class AudioPlayer {
 
     func playNext() {
         guard !trackQueue.isEmpty else {
-            print("[AudioPlayer] playNext: queue empty, requesting more tracks")
+            logger.info("playNext: queue empty, requesting more tracks")
             if let outgoing = currentTrack, !outgoing.isAd {
                 TrackHistory.shared.add(HistoryEntry(from: outgoing))
                 currentTrack = nil
@@ -68,7 +71,7 @@ class AudioPlayer {
         }
 
         let track = trackQueue.removeFirst()
-        print("[AudioPlayer] playNext: \(track.songName ?? "?") (\(trackQueue.count) remaining)")
+        logger.info("playNext: \(track.songName ?? "?", privacy: .public) (\(self.trackQueue.count) remaining)")
         play(track: track)
 
         // Prefetch when queue is low
@@ -79,7 +82,7 @@ class AudioPlayer {
 
     func play(track: PlaylistItem) {
         guard let urlStr = track.bestAudioUrl, let url = URL(string: urlStr) else {
-            print("[AudioPlayer] play: no audio URL for \(track.songName ?? "?")")
+            logger.error("play: no audio URL for \(track.songName ?? "?", privacy: .public)")
             onError?("No audio URL for track")
             playNext()
             return
@@ -93,7 +96,7 @@ class AudioPlayer {
             TrackHistory.shared.add(HistoryEntry(from: outgoing))
         }
 
-        print("[AudioPlayer] play: \(track.songName ?? "?") by \(track.artistName ?? "?")")
+        logger.info("play: \(track.songName ?? "?", privacy: .public) by \(track.artistName ?? "?", privacy: .public)")
         currentTrack = track
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 10
@@ -112,7 +115,7 @@ class AudioPlayer {
                 switch observedItem.status {
                 case .failed:
                     let errMsg = observedItem.error?.localizedDescription ?? "unknown"
-                    print("[AudioPlayer] item FAILED to load: \(errMsg)")
+                    logger.error("item FAILED to load: \(errMsg, privacy: .public)")
 
                     // Classify the error to choose recovery strategy
                     if let nsError = observedItem.error as NSError? {
@@ -120,7 +123,7 @@ class AudioPlayer {
                         if code == NSURLErrorNotConnectedToInternet ||
                            code == NSURLErrorNetworkConnectionLost {
                             // Network gone — don't burn through queue
-                            print("[AudioPlayer] network unavailable, waiting")
+                            logger.info("network unavailable, waiting")
                             self.onError?("Network unavailable")
                             return
                         }
@@ -128,7 +131,7 @@ class AudioPlayer {
                            code == NSURLErrorFileDoesNotExist ||
                            code == NSURLErrorNoPermissionsToReadFile {
                             // URL expired or forbidden — queue is stale
-                            print("[AudioPlayer] resource unavailable — queue stale")
+                            logger.info("resource unavailable — queue stale")
                             self.onQueueStale?()
                             return
                         }
@@ -137,13 +140,13 @@ class AudioPlayer {
                     // Other errors: skip track, but track consecutive failures
                     self.consecutiveFailures += 1
                     if self.consecutiveFailures >= 3 {
-                        print("[AudioPlayer] \(self.consecutiveFailures) consecutive failures — queue stale")
+                        logger.error("\(self.consecutiveFailures) consecutive failures — queue stale")
                         self.onQueueStale?()
                     } else {
                         self.playNext()
                     }
                 case .readyToPlay:
-                    print("[AudioPlayer] item ready to play")
+                    logger.debug("item ready to play")
                     self.consecutiveFailures = 0
                 default:
                     break
@@ -170,7 +173,7 @@ class AudioPlayer {
         ) { [weak self] notification in
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor in
-                print("[AudioPlayer] mid-playback error: \(error?.localizedDescription ?? "unknown")")
+                logger.error("mid-playback error: \(error?.localizedDescription ?? "unknown", privacy: .public)")
                 self?.onError?(error?.localizedDescription ?? "Playback failed")
                 self?.playNext()
             }
@@ -191,7 +194,7 @@ class AudioPlayer {
 
         player?.play()
         isPlaying = true
-        print("[AudioPlayer] play: started, player.rate=\(player?.rate ?? -1), item.status=\(playerItem?.status.rawValue ?? -1)")
+        logger.info("play: started, player.rate=\(self.player?.rate ?? -1), item.status=\(self.playerItem?.status.rawValue ?? -1)")
         onTrackChanged?(track)
         onPlaybackStateChanged?(true)
     }

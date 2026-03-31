@@ -1,6 +1,9 @@
 #if !TESTING
 import AppKit
 import Network
+import os
+
+private let logger = Logger(subsystem: "com.sixth.app", category: "App")
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
@@ -38,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var currentFeedbackId: String?
     private var pendingScrollingTitleHide = false
     private var overlayClosedHistory = false
+    private var offlineSince: Date?  // when we entered offline state (nil = not offline)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Permanent app icon (popover anchors here)
@@ -79,7 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         // Setup hotkeys
         hotKeyManager.onPlayPause = { [weak self] in
-            self?.audioPlayer.togglePlayPause()
+            self?.handlePlayPause()
         }
         hotKeyManager.onNextTrack = { [weak self] in
             self?.audioPlayer.playNext()
@@ -152,7 +156,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         audioPlayer.onError = { [weak self] message in
-            print("[App] playback error: \(message)")
+            logger.error("playback error: \(message, privacy: .public)")
             self?.playerVC.showError(message)
         }
 
@@ -168,10 +172,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audioPlayer.onQueueStale = { [weak self] in
             guard let self = self else { return }
             if !self.isNetworkAvailable {
-                print("[App] queue stale but offline — entering offline state")
+                logger.info("queue stale but offline — entering offline state")
                 self.enterOfflineState()
             } else {
-                print("[App] queue stale — initiating recovery")
+                logger.info("queue stale — initiating recovery")
                 self.handleStaleQueue()
             }
         }
@@ -186,7 +190,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.audioPlayer.replay()
         }
         playerVC.onPlayPause = { [weak self] in
-            self?.audioPlayer.togglePlayPause()
+            self?.handlePlayPause()
         }
         playerVC.onNext = { [weak self] in
             self?.audioPlayer.playNext()
@@ -339,7 +343,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.stations = stationList
                 self.stationListVC.update(stations: stationList)
             } catch {
-                print("Failed to fetch stations: \(error)")
+                logger.error("failed to fetch stations: \(error, privacy: .public)")
                 // If we had cached stations, restore them; otherwise dismiss
                 if self.stations.isEmpty {
                     self.dismissStationsOverlay()
@@ -480,13 +484,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    // MARK: - Playback Recovery
+
+    private func handlePlayPause() {
+        if audioPlayer.currentTrack == nil && currentStation != nil && isLoggedIn && !isFetchingTracks {
+            resumePlayback()
+        } else {
+            audioPlayer.togglePlayPause()
+        }
+    }
+
+    private func resumePlayback() {
+        guard currentStation != nil, isLoggedIn, !isFetchingTracks else { return }
+        playerVC.showLoading()
+        playerVC.setControlsEnabled(false)
+        fetchMoreTracks()
+    }
+
     // MARK: - Auth
 
     private func performLogin(username: String, password: String) {
         Task {
             do {
+                logger.info("performLogin: starting partnerLogin")
                 try await api.partnerLogin()
+                logger.info("performLogin: partnerLogin ok, starting userLogin")
                 try await api.userLogin(username: username, password: password)
+                logger.info("performLogin: userLogin ok")
                 isLoggedIn = true
 
                 _ = CredentialStore.saveCredentials(username: username, password: password)
@@ -502,12 +526,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     selectStation(station)
                 }
             } catch {
+                logger.error("performLogin failed: \(error, privacy: .public)")
                 isLoggedIn = false
                 let message: String
                 if let pandoraError = error as? PandoraError {
                     switch pandoraError {
-                    case .userLoginFailed:
-                        message = "Invalid email or password"
+                    case .userLoginFailed(let msg):
+                        message = msg
                     case .partnerLoginFailed:
                         message = "Unable to connect to Pandora"
                     case .notLoggedIn:
@@ -568,23 +593,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func fetchMoreTracks() {
         guard let station = currentStation else { return }
         guard !isFetchingTracks else {
-            print("[App] fetchMoreTracks: already fetching, skipping")
+            logger.debug("fetchMoreTracks: already fetching, skipping")
             return
         }
         isFetchingTracks = true
-        print("[App] fetchMoreTracks for station: \(station.stationName)")
+        logger.info("fetchMoreTracks for station: \(station.stationName, privacy: .public)")
         Task {
             defer { self.isFetchingTracks = false }
             do {
                 let tracks = try await self.fetchTracksWithRetry(stationToken: station.stationToken)
                 // Don't enqueue if station changed while we were fetching
                 guard self.currentStation?.stationToken == station.stationToken else {
-                    print("[App] fetchMoreTracks: station changed during fetch, discarding")
+                    logger.info("fetchMoreTracks: station changed during fetch, discarding")
+                    return
+                }
+                guard !tracks.isEmpty else {
+                    logger.warning("fetchMoreTracks: got 0 tracks")
+                    if self.audioPlayer.currentTrack == nil {
+                        self.playerVC.showError("No tracks available")
+                    }
                     return
                 }
                 self.enqueueAndPrefetch(tracks)
             } catch {
-                print("[App] fetchMoreTracks failed: \(error)")
+                logger.error("fetchMoreTracks failed: \(error, privacy: .public)")
                 if !self.isNetworkAvailable {
                     self.enterOfflineState()
                 } else if self.audioPlayer.currentTrack == nil || !self.audioPlayer.isPlaying {
@@ -599,7 +631,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return try await api.getPlaylist(stationToken: stationToken)
         } catch let error as PandoraError {
             if isAuthError(error) && attempt == 0 {
-                print("[App] auth error on fetch, re-authenticating...")
+                logger.info("auth error on fetch, re-authenticating...")
                 try await reAuthenticate()
                 return try await fetchTracksWithRetry(stationToken: stationToken, attempt: attempt + 1)
             }
@@ -616,7 +648,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let base = pow(3.0, Double(attempt))
             let jitter = Double.random(in: 0..<1)
             let delay = UInt64((base + jitter) * 1_000_000_000)
-            print("[App] network error on fetch (attempt \(attempt)), retrying in \(String(format: "%.1f", base + jitter))s...")
+            logger.info("network error on fetch (attempt \(attempt)), retrying in \(String(format: "%.1f", base + jitter))s...")
             try await Task.sleep(nanoseconds: delay)
             return try await fetchTracksWithRetry(stationToken: stationToken, attempt: attempt + 1)
         }
@@ -626,7 +658,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let creds = CredentialStore.loadCredentials() else {
             throw PandoraError.notLoggedIn
         }
-        print("[App] re-authenticating as \(creds.username)")
+        logger.info("re-authenticating as \(creds.username, privacy: .public)")
         try await api.partnerLogin()
         try await api.userLogin(username: creds.username, password: creds.password)
         isLoggedIn = true
@@ -634,7 +666,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func handleStaleQueue() {
         guard let station = currentStation else { return }
-        print("[App] handleStaleQueue: clearing queue, re-fetching for \(station.stationName)")
+        logger.info("handleStaleQueue: clearing queue, re-fetching for \(station.stationName, privacy: .public)")
         audioPlayer.clearQueue()
         audioPlayer.stop()
         playerVC.showLoading()
@@ -643,10 +675,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             do {
                 try await self.reAuthenticate()
                 let tracks = try await self.api.getPlaylist(stationToken: station.stationToken)
-                print("[App] stale recovery: got \(tracks.count) fresh tracks")
+                logger.info("stale recovery: got \(tracks.count) fresh tracks")
+                guard !tracks.isEmpty else {
+                    self.playerVC.showError("No tracks available — try another station")
+                    return
+                }
                 self.enqueueAndPrefetch(tracks)
             } catch {
-                print("[App] stale recovery failed: \(error)")
+                logger.error("stale recovery failed: \(error, privacy: .public)")
                 if !self.isNetworkAvailable {
                     self.enterOfflineState()
                 } else {
@@ -673,7 +709,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !isAvailable && self.isNetworkAvailable {
             // Went offline
             self.isNetworkAvailable = false
-            print("[App] network lost")
+            logger.info("network lost")
             if !audioPlayer.isPlaying {
                 enterOfflineState()
             }
@@ -682,7 +718,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else if isAvailable && !self.isNetworkAvailable {
             // Came back online
             self.isNetworkAvailable = true
-            print("[App] network restored, resuming")
+            logger.info("network restored, resuming")
             exitOfflineState()
         }
     }
@@ -690,24 +726,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func enterOfflineState() {
         audioPlayer.stop()
         audioPlayer.clearQueue()
+        offlineSince = Date()
         playerVC.setHistoryOpen(false)
         popover.contentSize = playerVC.preferredContentSize
         playerVC.clearTrackDisplay()
         playerVC.showOffline()
         playerVC.updatePlayState(isPlaying: false)
         scrollingTitle.setIdle()
-        print("[App] entered offline state")
+        logger.info("entered offline state")
     }
 
     private func exitOfflineState() {
         playerVC.hideOffline()
+        // Only auto-resume if we went offline recently (within 10 minutes)
+        let shouldResume: Bool
+        if let since = offlineSince {
+            shouldResume = Date().timeIntervalSince(since) < 600
+        } else {
+            shouldResume = false
+        }
+        offlineSince = nil
         guard isLoggedIn else { return }
         Task {
             do {
                 try await self.reAuthenticate()
-                print("[App] network restored, session ready")
+                logger.info("network restored, session ready (resume=\(shouldResume))")
+                if shouldResume && self.currentStation != nil && self.audioPlayer.currentTrack == nil {
+                    self.playerVC.showLoading()
+                    self.fetchMoreTracks()
+                }
             } catch {
-                print("[App] network recovery auth failed: \(error)")
+                logger.error("network recovery auth failed: \(error, privacy: .public)")
             }
         }
     }
@@ -737,7 +786,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     TrackHistory.shared.updateRating(trackToken: token, newRating: 0)
                     self.playerVC.reloadHistory()
                 } catch {
-                    print("Remove thumbs up failed: \(error)")
+                    logger.error("remove thumbs up failed: \(error, privacy: .public)")
                     self.currentTrackLiked = true
                     self.playerVC.highlightThumbsUp(true)
                 }
@@ -753,7 +802,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     TrackHistory.shared.updateRating(trackToken: token, newRating: 1)
                     self.playerVC.reloadHistory()
                 } catch {
-                    print("Thumbs up failed: \(error)")
+                    logger.error("thumbs up failed: \(error, privacy: .public)")
                     self.currentTrackLiked = false
                     self.playerVC.highlightThumbsUp(false)
                 }
@@ -767,8 +816,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             do {
                 _ = try await api.addFeedback(trackToken: token, isPositive: false)
                 self.audioPlayer.playNext()
+                TrackHistory.shared.updateRating(trackToken: token, newRating: -1)
+                self.playerVC.reloadHistory()
             } catch {
-                print("Thumbs down failed: \(error)")
+                logger.error("thumbs down failed: \(error, privacy: .public)")
             }
         }
     }
@@ -789,6 +840,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let entries = TrackHistory.shared.entries
         guard let entry = entries.first(where: { $0.trackToken == trackToken }) else { return }
         let wasLiked = entry.songRating == 1
+        let previousRating = entry.songRating
         let newRating = wasLiked ? 0 : 1
 
         TrackHistory.shared.updateRating(trackToken: trackToken, newRating: newRating)
@@ -812,24 +864,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     _ = try await api.addFeedback(trackToken: trackToken, isPositive: true)
                 }
             } catch {
-                print("History thumbs up failed: \(error)")
-                // Revert
-                TrackHistory.shared.updateRating(trackToken: trackToken, newRating: wasLiked ? 1 : 0)
+                logger.error("history thumbs up failed: \(error, privacy: .public)")
+                TrackHistory.shared.updateRating(trackToken: trackToken, newRating: previousRating)
                 self.playerVC.reloadHistory()
                 if let current = self.audioPlayer.currentTrack, current.trackToken == trackToken {
-                    self.currentTrackLiked = wasLiked
-                    self.playerVC.highlightThumbsUp(wasLiked)
+                    self.currentTrackLiked = previousRating == 1
+                    self.playerVC.highlightThumbsUp(previousRating == 1)
                 }
             }
         }
     }
 
     private func historyThumbsDown(trackToken: String) {
-        Task {
-            do {
-                _ = try await api.addFeedback(trackToken: trackToken, isPositive: false)
-            } catch {
-                print("History thumbs down failed: \(error)")
+        let entries = TrackHistory.shared.entries
+        guard let entry = entries.first(where: { $0.trackToken == trackToken }) else { return }
+        let wasDisliked = entry.songRating == -1
+        let previousRating = entry.songRating
+
+        if wasDisliked {
+            // Un-dislike: revert to neutral
+            TrackHistory.shared.updateRating(trackToken: trackToken, newRating: 0)
+            playerVC.reloadHistory()
+
+            Task {
+                do {
+                    let fid = try await api.addFeedback(trackToken: trackToken, isPositive: false)
+                    if let fid = fid {
+                        try await api.deleteFeedback(feedbackId: fid)
+                    }
+                } catch {
+                    logger.error("history thumbs down undo failed: \(error, privacy: .public)")
+                    TrackHistory.shared.updateRating(trackToken: trackToken, newRating: previousRating)
+                    self.playerVC.reloadHistory()
+                }
+            }
+        } else {
+            // Dislike
+            TrackHistory.shared.updateRating(trackToken: trackToken, newRating: -1)
+            playerVC.reloadHistory()
+
+            // Sync with currently playing track if it matches
+            if let current = audioPlayer.currentTrack, current.trackToken == trackToken {
+                currentTrackLiked = false
+                playerVC.highlightThumbsUp(false)
+            }
+
+            Task {
+                do {
+                    _ = try await api.addFeedback(trackToken: trackToken, isPositive: false)
+                } catch {
+                    logger.error("history thumbs down failed: \(error, privacy: .public)")
+                    TrackHistory.shared.updateRating(trackToken: trackToken, newRating: previousRating)
+                    self.playerVC.reloadHistory()
+                    if let current = self.audioPlayer.currentTrack, current.trackToken == trackToken {
+                        self.currentTrackLiked = previousRating == 1
+                        self.playerVC.highlightThumbsUp(previousRating == 1)
+                    }
+                }
             }
         }
     }
@@ -865,6 +956,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Refresh play state after show so it runs after lazy viewDidLoad/setupUI
             if popover.contentViewController === playerVC {
                 playerVC.updatePlayState(isPlaying: audioPlayer.isPlaying)
+                // Recover if player is dead but we have a station
+                if audioPlayer.currentTrack == nil && currentStation != nil && isLoggedIn && !isFetchingTracks {
+                    resumePlayback()
+                }
             }
 
             // Monitor clicks outside the app to dismiss
