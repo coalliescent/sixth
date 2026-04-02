@@ -209,6 +209,22 @@ class AudioPlayer {
         }
     }
 
+    func seek(to seconds: Double, completion: (() -> Void)? = nil) {
+        guard let player = player, playerItem != nil else {
+            completion?()
+            return
+        }
+        let time = CMTime(seconds: seconds, preferredTimescale: 600)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            DispatchQueue.main.async { completion?() }
+        }
+    }
+
+    var currentDuration: Double? {
+        guard let duration = player?.currentItem?.duration, duration.isNumeric else { return nil }
+        return duration.seconds
+    }
+
     func togglePlayPause() {
         guard player != nil else { return }
         if isPlaying {
@@ -275,6 +291,8 @@ class AudioPlayer {
     func clearQueue() {}
     func playNext() {}
     func replay() {}
+    func seek(to seconds: Double, completion: (() -> Void)? = nil) { completion?() }
+    var currentDuration: Double? { return nil }
     func togglePlayPause() {}
     func stop() {}
 }

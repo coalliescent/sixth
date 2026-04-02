@@ -51,14 +51,153 @@ final class ImageCache {
     }
 }
 
+// MARK: - Tray Mode
+
+enum TrayMode: String {
+    case history
+    case lyrics
+}
+
+// MARK: - GrabberView
+
+private class GrabberView: NSView {
+    var onDrag: ((CGFloat) -> Void)?  // delta Y
+    var onDragEnd: (() -> Void)?
+    private var dragStartY: CGFloat = 0
+
+    private let pill = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor(white: 0.4, alpha: 1).cgColor
+        pill.layer?.cornerRadius = 1
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pill)
+
+        NSLayoutConstraint.activate([
+            pill.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pill.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pill.widthAnchor.constraint(equalToConstant: 40),
+            pill.heightAnchor.constraint(equalToConstant: 2),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartY = NSEvent.mouseLocation.y
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let screenY = NSEvent.mouseLocation.y
+        let delta = screenY - dragStartY
+        dragStartY = screenY
+        // Dragging down (negative y in screen coords) increases tray height
+        onDrag?(-delta)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onDragEnd?()
+    }
+}
+
+// MARK: - SeekOverlay
+
+private class SeekOverlay: NSView {
+    var onSeek: ((Double) -> Void)?    // normalized 0-1 fraction
+    var onSeekEnd: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    private let playhead = NSView()
+    private var playheadCenterX: NSLayoutConstraint!
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        playhead.wantsLayer = true
+        playhead.layer?.backgroundColor = NSColor(white: 0.75, alpha: 1).cgColor
+        playhead.layer?.cornerRadius = 4
+        playhead.isHidden = true
+        playhead.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(playhead)
+
+        playheadCenterX = playhead.centerXAnchor.constraint(equalTo: leadingAnchor, constant: 0)
+        NSLayoutConstraint.activate([
+            playhead.centerYAnchor.constraint(equalTo: centerYAnchor),
+            playhead.widthAnchor.constraint(equalToConstant: 8),
+            playhead.heightAnchor.constraint(equalToConstant: 8),
+            playheadCenterX,
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = trackingArea { removeTrackingArea(old) }
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self, userInfo: nil
+        )
+        addTrackingArea(trackingArea!)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        playhead.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        playhead.isHidden = true
+    }
+
+    func updatePlayheadPosition(_ fraction: Double) {
+        let clamped = min(max(fraction, 0), 1)
+        playheadCenterX.constant = CGFloat(clamped) * bounds.width
+    }
+
+    private func fractionForEvent(_ event: NSEvent) -> Double {
+        let local = convert(event.locationInWindow, from: nil)
+        return min(max(Double(local.x / bounds.width), 0), 1)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let f = fractionForEvent(event)
+        updatePlayheadPosition(f)
+        playhead.isHidden = false
+        onSeek?(f)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let f = fractionForEvent(event)
+        updatePlayheadPosition(f)
+        onSeek?(f)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onSeekEnd?()
+    }
+}
+
 class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     // UI Elements
     private let albumArt = NSImageView()
     private let songLabel = NSTextField(labelWithString: "")
     private let artistLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
+    private let seekOverlay = SeekOverlay()
     private let elapsedLabel = NSTextField(labelWithString: "0:00")
     private let timeLabel = NSTextField(labelWithString: "0:00")
+    private var isSeeking = false
+    private var lastKnownDuration: Double = 0
     private let replayButton = NSButton()
     private let playPauseButton = NSButton()
     private let nextButton = NSButton()
@@ -75,8 +214,28 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     private let historySeparator = NSView()
     private let historyScrollView = NSScrollView()
     private let historyTableView = NSTableView()
-    private var historyHeightConstraint: NSLayoutConstraint!
-    private(set) var isHistoryOpen = false
+
+    // Lyrics UI
+    private let lyricsButton = NSButton()
+    private let lyricsChevron = NSButton()
+    private let lyricsScrollView = NSScrollView()
+    private let lyricsStackView = NSStackView()
+    private var lyricsLineLabels: [NSTextField] = []
+    private var currentLyricsLineIndex = -1
+    private var syncedLines: [LyricsLine] = []
+    private let lyricsStatusLabel = NSTextField(labelWithString: "")
+    private let lyricsSpinner = NSProgressIndicator()
+
+    // Shared tray
+    weak var popover: NSPopover?  // set by AppDelegate for synchronous resize during drag
+    private var trayHeightConstraint: NSLayoutConstraint!
+    private let grabberBar = GrabberView()
+    private(set) var trayMode: TrayMode = .history
+    private(set) var isTrayOpen = false
+    private var savedTrayHeight: CGFloat {
+        let h = UserDefaults.standard.double(forKey: "trayHeight")
+        return max(h > 0 ? CGFloat(h) : 260, 200)
+    }
 
     private let loadingSpinner = NSProgressIndicator()
     private let offlineOverlay = NSView()
@@ -100,6 +259,9 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     var onHistoryToggled: ((Bool) -> Void)?
     var onHistoryThumbsUp: ((String) -> Void)?
     var onHistoryThumbsDown: ((String) -> Void)?
+    var onLyrics: (() -> Void)?
+    var onTrayResized: ((CGFloat) -> Void)?
+    var onSeek: ((Double) -> Void)?  // normalized 0-1
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 134))
@@ -116,7 +278,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     }
 
     private func setupUI() {
-        // Button column (right side): quit, settings, about
+        // Button column (right side): quit, settings, about, stations
         quitButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Quit")
         quitButton.isBordered = false
         quitButton.contentTintColor = .lightGray
@@ -189,9 +351,28 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(timeLabel)
 
-        // Bottom row: [historyToggle + chevron] ... [thumbsDown replay play next thumbsUp] ... [stations]
+        // Seek overlay (transparent hit target on top of progress bar)
+        seekOverlay.translatesAutoresizingMaskIntoConstraints = false
+        seekOverlay.onSeek = { [weak self] fraction in
+            guard let self = self else { return }
+            self.isSeeking = true
+            self.setProgress(fraction)
+            self.seekOverlay.updatePlayheadPosition(fraction)
+            if self.lastKnownDuration > 0 {
+                let current = fraction * self.lastKnownDuration
+                let elapsedSec = Int(current)
+                self.elapsedLabel.stringValue = String(format: "%d:%02d", elapsedSec / 60, elapsedSec % 60)
+                let remaining = Int(self.lastKnownDuration - current)
+                self.timeLabel.stringValue = String(format: "-%d:%02d", remaining / 60, remaining % 60)
+            }
+            self.onSeek?(fraction)
+        }
+        seekOverlay.onSeekEnd = nil  // seeking cleared by endSeeking() on seek completion
+        view.addSubview(seekOverlay)
 
-        // History toggle button (left side, chrome style like settings gear)
+        // Bottom row: [historyToggle + chevron] [lyrics] ... [thumbsDown replay play next thumbsUp]
+
+        // History toggle button (left side)
         historyToggleButton.image = NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "History")
         historyToggleButton.isBordered = false
         historyToggleButton.contentTintColor = .lightGray
@@ -212,6 +393,27 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         historyChevron.target = self
         historyChevron.action = #selector(historyToggleTapped)
         view.addSubview(historyChevron)
+
+        // Lyrics button (right of history chevron) — emoji rendered as monochrome
+        lyricsButton.title = ""
+        lyricsButton.image = Self.monochromeEmoji("🗣️", size: 16)
+        lyricsButton.imagePosition = .imageOnly
+        lyricsButton.isBordered = false
+        lyricsButton.contentTintColor = .lightGray
+        lyricsButton.translatesAutoresizingMaskIntoConstraints = false
+        lyricsButton.target = self
+        lyricsButton.action = #selector(lyricsTapped)
+        view.addSubview(lyricsButton)
+
+        // Lyrics disclosure chevron
+        lyricsChevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        lyricsChevron.isBordered = false
+        lyricsChevron.contentTintColor = .lightGray
+        lyricsChevron.symbolConfiguration = chevronConfig
+        lyricsChevron.translatesAutoresizingMaskIntoConstraints = false
+        lyricsChevron.target = self
+        lyricsChevron.action = #selector(lyricsTapped)
+        view.addSubview(lyricsChevron)
 
         // Thumbs down (left of replay, white tint)
         thumbsDownButton.image = NSImage(systemSymbolName: "hand.thumbsdown.fill", accessibilityDescription: "Thumbs Down")
@@ -327,6 +529,12 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             timeLabel.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 2),
             timeLabel.trailingAnchor.constraint(equalTo: progressBar.trailingAnchor),
 
+            // Seek overlay centered on progress bar, taller for hit targeting
+            seekOverlay.centerYAnchor.constraint(equalTo: progressBar.centerYAnchor),
+            seekOverlay.leadingAnchor.constraint(equalTo: progressBar.leadingAnchor),
+            seekOverlay.trailingAnchor.constraint(equalTo: progressBar.trailingAnchor),
+            seekOverlay.heightAnchor.constraint(equalToConstant: 20),
+
             // Bottom row — vertically centered between album art bottom (90) and pane bottom (134)
             historyToggleButton.topAnchor.constraint(equalTo: bottomRowY, constant: 99),
             historyToggleButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
@@ -338,9 +546,20 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             historyChevron.widthAnchor.constraint(equalToConstant: 12),
             historyChevron.heightAnchor.constraint(equalToConstant: 12),
 
+            // Lyrics button + chevron right of history chevron
+            lyricsButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            lyricsButton.leadingAnchor.constraint(equalTo: historyChevron.trailingAnchor, constant: 4),
+            lyricsButton.widthAnchor.constraint(equalToConstant: 24),
+            lyricsButton.heightAnchor.constraint(equalToConstant: 24),
+
+            lyricsChevron.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
+            lyricsChevron.leadingAnchor.constraint(equalTo: lyricsButton.trailingAnchor, constant: -2),
+            lyricsChevron.widthAnchor.constraint(equalToConstant: 12),
+            lyricsChevron.heightAnchor.constraint(equalToConstant: 12),
+
             // Centered transport cluster: thumbsDown, replay, play, next, thumbsUp
             playPauseButton.centerYAnchor.constraint(equalTo: historyToggleButton.centerYAnchor),
-            playPauseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            playPauseButton.centerXAnchor.constraint(equalTo: view.centerXAnchor, constant: 20),
             playPauseButton.widthAnchor.constraint(equalToConstant: 32),
             playPauseButton.heightAnchor.constraint(equalToConstant: 32),
 
@@ -365,7 +584,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             thumbsUpButton.heightAnchor.constraint(equalToConstant: 26),
         ])
 
-        // History tray
+        // Shared tray area
 
         // Separator line
         historySeparator.wantsLayer = true
@@ -374,11 +593,12 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         historySeparator.isHidden = true
         view.addSubview(historySeparator)
 
-        // Scroll view + table view
+        // History scroll view + table view
         historyScrollView.translatesAutoresizingMaskIntoConstraints = false
         historyScrollView.hasVerticalScroller = true
         historyScrollView.drawsBackground = false
         historyScrollView.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        historyScrollView.isHidden = true
         view.addSubview(historyScrollView)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("HistoryColumn"))
@@ -393,7 +613,53 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         historyTableView.selectionHighlightStyle = .none
         historyScrollView.documentView = historyTableView
 
-        historyHeightConstraint = historyScrollView.heightAnchor.constraint(equalToConstant: 0)
+        // Lyrics scroll view + stack view
+        lyricsScrollView.translatesAutoresizingMaskIntoConstraints = false
+        lyricsScrollView.hasVerticalScroller = true
+        lyricsScrollView.drawsBackground = false
+        lyricsScrollView.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        lyricsScrollView.isHidden = true
+        view.addSubview(lyricsScrollView)
+
+        lyricsStackView.orientation = .vertical
+        lyricsStackView.alignment = .leading
+        lyricsStackView.spacing = 6
+        lyricsStackView.translatesAutoresizingMaskIntoConstraints = false
+        lyricsStackView.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+
+        let lyricsDocView = NSView()
+        lyricsDocView.translatesAutoresizingMaskIntoConstraints = false
+        lyricsDocView.addSubview(lyricsStackView)
+        lyricsScrollView.documentView = lyricsDocView
+
+        // Lyrics status label (centered in tray area, outside scroll view)
+        lyricsStatusLabel.font = .systemFont(ofSize: 13)
+        lyricsStatusLabel.textColor = .lightGray
+        lyricsStatusLabel.alignment = .center
+        lyricsStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        lyricsStatusLabel.isHidden = true
+        view.addSubview(lyricsStatusLabel)
+
+        // Lyrics spinner (centered in tray area, outside scroll view)
+        lyricsSpinner.style = .spinning
+        lyricsSpinner.controlSize = .small
+        lyricsSpinner.translatesAutoresizingMaskIntoConstraints = false
+        lyricsSpinner.isHidden = true
+        view.addSubview(lyricsSpinner)
+
+        // Grabber bar
+        grabberBar.translatesAutoresizingMaskIntoConstraints = false
+        grabberBar.isHidden = true
+        grabberBar.onDrag = { [weak self] delta in
+            self?.handleGrabberDrag(delta: delta)
+        }
+        grabberBar.onDragEnd = { [weak self] in
+            self?.handleGrabberDragEnd()
+        }
+        view.addSubview(grabberBar)
+
+        // Shared tray height constraint (applies to both scroll views)
+        trayHeightConstraint = historyScrollView.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             historySeparator.topAnchor.constraint(equalTo: view.topAnchor, constant: 134),
@@ -404,7 +670,32 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
             historyScrollView.topAnchor.constraint(equalTo: historySeparator.bottomAnchor),
             historyScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             historyScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            historyHeightConstraint,
+            trayHeightConstraint,
+
+            lyricsScrollView.topAnchor.constraint(equalTo: historySeparator.bottomAnchor),
+            lyricsScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            lyricsScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            lyricsScrollView.heightAnchor.constraint(equalTo: historyScrollView.heightAnchor),
+
+            // Lyrics doc view fills scroll view
+            lyricsStackView.topAnchor.constraint(equalTo: lyricsDocView.topAnchor),
+            lyricsStackView.leadingAnchor.constraint(equalTo: lyricsDocView.leadingAnchor),
+            lyricsStackView.trailingAnchor.constraint(equalTo: lyricsDocView.trailingAnchor),
+            lyricsStackView.bottomAnchor.constraint(equalTo: lyricsDocView.bottomAnchor),
+            lyricsDocView.widthAnchor.constraint(equalTo: lyricsScrollView.widthAnchor),
+
+            // Status label and spinner centered in tray area (outside scroll view)
+            lyricsStatusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            lyricsStatusLabel.topAnchor.constraint(equalTo: historySeparator.bottomAnchor, constant: 40),
+
+            lyricsSpinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            lyricsSpinner.topAnchor.constraint(equalTo: historySeparator.bottomAnchor, constant: 40),
+
+            // Grabber bar below tray content
+            grabberBar.topAnchor.constraint(equalTo: historyScrollView.bottomAnchor),
+            grabberBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            grabberBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            grabberBar.heightAnchor.constraint(equalToConstant: 8),
         ])
 
         // Loading spinner (shown during track fetches)
@@ -498,7 +789,12 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
 
     func updateProgress(current: Double, duration: Double) {
         guard duration > 0 else { return }
-        progressBar.doubleValue = current / duration
+        lastKnownDuration = duration
+        guard !isSeeking else { return }
+
+        let fraction = current / duration
+        setProgress(fraction)
+        seekOverlay.updatePlayheadPosition(fraction)
 
         let elapsedSec = Int(current)
         let elapsedMin = elapsedSec / 60
@@ -562,25 +858,258 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         thumbsDownButton.contentTintColor = tint
     }
 
-    // MARK: - History Tray
+    // MARK: - Tray
 
-    func setHistoryOpen(_ open: Bool, animated: Bool = false) {
-        isHistoryOpen = open
-        let chevronName = open ? "chevron.down" : "chevron.right"
-        historyChevron.image = NSImage(systemSymbolName: chevronName, accessibilityDescription: nil)
+    func setTrayOpen(_ open: Bool, mode: TrayMode? = nil) {
+        if let m = mode { trayMode = m }
+        isTrayOpen = open
+
+        let historyActive = open && trayMode == .history
+        let lyricsActive = open && trayMode == .lyrics
+
+        // Update both chevrons
+        historyChevron.image = NSImage(systemSymbolName: historyActive ? "chevron.down" : "chevron.right", accessibilityDescription: nil)
+        lyricsChevron.image = NSImage(systemSymbolName: lyricsActive ? "chevron.down" : "chevron.right", accessibilityDescription: nil)
+
+        // Toggle visibility
+        historyScrollView.isHidden = !historyActive
+        lyricsScrollView.isHidden = !lyricsActive
+        grabberBar.isHidden = !open
         historySeparator.isHidden = !open
-        historyHeightConstraint.constant = open ? 260 : 0
-        if open {
+
+        // Hide lyrics status/spinner when not in lyrics mode
+        if !lyricsActive {
+            lyricsStatusLabel.isHidden = true
+            lyricsSpinner.stopAnimation(nil)
+            lyricsSpinner.isHidden = true
+        }
+
+        // Highlight active button
+        historyToggleButton.contentTintColor = historyActive ? .white : .lightGray
+        lyricsButton.contentTintColor = lyricsActive ? .white : .lightGray
+
+        // Set height
+        let height: CGFloat = open ? savedTrayHeight : 0
+        trayHeightConstraint.constant = height
+
+        if open && trayMode == .history {
             historyTableView.reloadData()
         }
-        let newSize = NSSize(width: 360, height: open ? 394 : 134)
-        self.preferredContentSize = newSize
+
+        // +9 for separator (1) + grabber (8) when open
+        let totalHeight: CGFloat = 134 + (open ? height + 9 : 0)
+        self.preferredContentSize = NSSize(width: 360, height: totalHeight)
+    }
+
+    // Backward-compatible wrapper used by AppDelegate
+    func setHistoryOpen(_ open: Bool, animated: Bool = false) {
+        setTrayOpen(open, mode: .history)
+    }
+
+    var isHistoryOpen: Bool {
+        return isTrayOpen && trayMode == .history
     }
 
     func reloadHistory() {
-        if isHistoryOpen {
+        if isTrayOpen && trayMode == .history {
             historyTableView.reloadData()
         }
+    }
+
+    // MARK: - Grabber Drag
+
+    private func handleGrabberDrag(delta: CGFloat) {
+        let newHeight = trayHeightConstraint.constant + delta
+        let clamped = min(max(newHeight, 0), 500)
+        trayHeightConstraint.constant = clamped
+        let totalHeight: CGFloat = 134 + clamped + 9
+        let newSize = NSSize(width: 360, height: totalHeight)
+        self.preferredContentSize = newSize
+        // Resize popover synchronously without animation to prevent wiggle
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        popover?.contentSize = newSize
+        view.layoutSubtreeIfNeeded()
+        NSAnimationContext.endGrouping()
+        onTrayResized?(clamped)
+    }
+
+    private func handleGrabberDragEnd() {
+        let height = trayHeightConstraint.constant
+        if height < 60 {
+            // Snap close — don't save height
+            setTrayOpen(false)
+            onTrayResized?(0)
+        } else {
+            // Enforce minimum
+            let finalHeight = max(height, 100)
+            trayHeightConstraint.constant = finalHeight
+            let totalHeight: CGFloat = 134 + finalHeight + 9
+            self.preferredContentSize = NSSize(width: 360, height: totalHeight)
+            UserDefaults.standard.set(Double(finalHeight), forKey: "trayHeight")
+            onTrayResized?(finalHeight)
+        }
+    }
+
+    // MARK: - Lyrics Display
+
+    func showLyricsLoading() {
+        clearLyricsContent()
+        lyricsStatusLabel.isHidden = true
+        lyricsSpinner.startAnimation(nil)
+        lyricsSpinner.isHidden = false
+    }
+
+    func showLyrics(_ result: LyricsResult) {
+        clearLyricsContent()
+        lyricsSpinner.stopAnimation(nil)
+        lyricsSpinner.isHidden = true
+
+        switch result {
+        case .synced(let lines):
+            syncedLines = lines
+            for line in lines {
+                let label = makeLyricsLabel(line.text, color: .lightGray)
+                lyricsStackView.addArrangedSubview(label)
+                lyricsLineLabels.append(label)
+            }
+            lyricsStatusLabel.isHidden = true
+
+        case .plain(let text):
+            syncedLines = []
+            for line in text.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    // Add spacing for blank lines
+                    let spacer = NSView()
+                    spacer.translatesAutoresizingMaskIntoConstraints = false
+                    spacer.heightAnchor.constraint(equalToConstant: 8).isActive = true
+                    lyricsStackView.addArrangedSubview(spacer)
+                } else {
+                    let label = makeLyricsLabel(trimmed)
+                    lyricsStackView.addArrangedSubview(label)
+                    lyricsLineLabels.append(label)
+                }
+            }
+            lyricsStatusLabel.isHidden = true
+
+        case .instrumental:
+            lyricsStatusLabel.stringValue = "Instrumental"
+            lyricsStatusLabel.isHidden = false
+
+        case .notFound:
+            lyricsStatusLabel.stringValue = "Lyrics not available"
+            lyricsStatusLabel.isHidden = false
+        }
+
+        // Scroll to top
+        lyricsScrollView.documentView?.scroll(.zero)
+    }
+
+    func updateLyricsTime(_ time: Double) {
+        guard !syncedLines.isEmpty else { return }
+
+        // Binary search for the current line
+        var lo = 0, hi = syncedLines.count - 1
+        var idx = 0
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if syncedLines[mid].time <= time {
+                idx = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+
+        guard idx != currentLyricsLineIndex else { return }
+        currentLyricsLineIndex = idx
+
+        // Update highlighting
+        for (i, label) in lyricsLineLabels.enumerated() {
+            if i == idx {
+                label.font = .systemFont(ofSize: 14, weight: .semibold)
+                label.textColor = .white
+            } else {
+                label.font = .systemFont(ofSize: 13)
+                label.textColor = .lightGray
+            }
+        }
+
+        // Auto-scroll to center the current line, clamped to document bounds
+        if idx < lyricsLineLabels.count, let docView = lyricsScrollView.documentView {
+            let label = lyricsLineLabels[idx]
+            let labelFrame = label.convert(label.bounds, to: docView)
+            let visibleHeight = lyricsScrollView.contentView.bounds.height
+            let docHeight = docView.frame.height
+            let maxY = max(0, docHeight - visibleHeight)
+            let targetY = min(max(0, labelFrame.midY - visibleHeight / 2), maxY)
+            lyricsScrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+            lyricsScrollView.reflectScrolledClipView(lyricsScrollView.contentView)
+        }
+    }
+
+    func clearLyrics() {
+        clearLyricsContent()
+        lyricsSpinner.stopAnimation(nil)
+        lyricsSpinner.isHidden = true
+        lyricsStatusLabel.isHidden = true
+    }
+
+    private func clearLyricsContent() {
+        for label in lyricsLineLabels {
+            label.removeFromSuperview()
+        }
+        lyricsLineLabels.removeAll()
+        // Remove any spacers too
+        for view in lyricsStackView.arrangedSubviews {
+            view.removeFromSuperview()
+        }
+        syncedLines = []
+        currentLyricsLineIndex = -1
+    }
+
+    private func makeLyricsLabel(_ text: String, color: NSColor = .white) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = color
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    /// Render an emoji string into a template NSImage so contentTintColor applies.
+    private static func monochromeEmoji(_ emoji: String, size: CGFloat) -> NSImage {
+        let font = NSFont.systemFont(ofSize: size)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let strSize = (emoji as NSString).size(withAttributes: attrs)
+        let image = NSImage(size: strSize, flipped: false) { rect in
+            (emoji as NSString).draw(in: rect, withAttributes: attrs)
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    func endSeeking() {
+        isSeeking = false
+    }
+
+    private func setProgress(_ value: Double) {
+        // NSProgressIndicator animates value changes by default; suppress it.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setAnimationDuration(0)
+        progressBar.doubleValue = value
+        // Strip any animations NSProgressIndicator may have queued on its layer
+        progressBar.layer?.removeAllAnimations()
+        for sub in progressBar.layer?.sublayers ?? [] {
+            sub.removeAllAnimations()
+            sub.speed = Float.greatestFiniteMagnitude
+        }
+        CATransaction.commit()
     }
 
     // MARK: - Offline State
@@ -605,7 +1134,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         artistLabel.stringValue = ""
         artistLabel.toolTip = nil
         albumArt.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "No Art")
-        progressBar.doubleValue = 0
+        setProgress(0)
         elapsedLabel.stringValue = "0:00"
         timeLabel.stringValue = "0:00"
     }
@@ -620,11 +1149,16 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     @objc private func stationsTapped() { onStations?() }
 
     @objc private func historyToggleTapped() {
-        let newState = !isHistoryOpen
-        setHistoryOpen(newState)
-        onHistoryToggled?(newState)
+        if isTrayOpen && trayMode == .history {
+            setTrayOpen(false)
+            onHistoryToggled?(false)
+        } else {
+            setTrayOpen(true, mode: .history)
+            onHistoryToggled?(true)
+        }
     }
 
+    @objc private func lyricsTapped() { onLyrics?() }
     @objc private func aboutTapped() { onAbout?() }
     @objc private func settingsMenuTapped() { onSettings?() }
     @objc private func quitTapped() { onQuit?() }

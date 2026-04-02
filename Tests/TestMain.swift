@@ -45,6 +45,9 @@ struct TestRunner {
         print("\nTrackHistory Tests:")
         TrackHistoryTests.runAll()
 
+        print("\nLyricsProvider Tests:")
+        LyricsProviderTests.runAll()
+
         print("\nIntegration Tests:")
         IntegrationTests.runAll()
 

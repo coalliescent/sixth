@@ -40,8 +40,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var currentTrackLiked = false
     private var currentFeedbackId: String?
     private var pendingScrollingTitleHide = false
-    private var overlayClosedHistory = false
+    private var overlayClosedTray = false   // true if an overlay collapsed an open tray
+    private var overlayClosedTrayMode: TrayMode = .history
     private var offlineSince: Date?  // when we entered offline state (nil = not offline)
+    private var currentSyncedLines: [LyricsLine]?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Permanent app icon (popover anchors here)
@@ -110,6 +112,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Check for saved credentials
         if let creds = CredentialStore.loadCredentials() {
             showPlayer()
+            playerVC.showLoading()
+            playerVC.setControlsEnabled(false)
             performLogin(username: creds.username, password: creds.password)
         } else {
             showLogin()
@@ -134,6 +138,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 song: song, artist: artist, album: track.albumName ?? ""
             )
             self.playerVC.reloadHistory()
+
+            // Re-fetch lyrics if tray is open in lyrics mode
+            self.currentSyncedLines = nil
+            if self.playerVC.isTrayOpen && self.playerVC.trayMode == .lyrics {
+                self.fetchLyricsForCurrentTrack()
+            }
         }
 
         audioPlayer.onPlaybackStateChanged = { [weak self] isPlaying in
@@ -153,6 +163,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         audioPlayer.onProgress = { [weak self] current, duration in
             self?.playerVC.updateProgress(current: current, duration: duration)
+            if self?.currentSyncedLines != nil {
+                self?.playerVC.updateLyricsTime(current)
+            }
         }
 
         audioPlayer.onError = { [weak self] message in
@@ -186,6 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func setupViewControllers() {
         // Player
         playerVC = PlayerViewController()
+        playerVC.popover = popover
         playerVC.onReplay = { [weak self] in
             self?.audioPlayer.replay()
         }
@@ -215,6 +229,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         playerVC.onHistoryToggled = { [weak self] isOpen in
             self?.toggleHistory(isOpen: isOpen)
+        }
+        playerVC.onLyrics = { [weak self] in
+            self?.toggleLyrics()
+        }
+        playerVC.onTrayResized = { [weak self] height in
+            guard let self = self else { return }
+            if height > 0 {
+                UserDefaults.standard.set(Double(height), forKey: "trayHeight")
+            }
+            self.popover.contentSize = self.playerVC.preferredContentSize
+        }
+        playerVC.onSeek = { [weak self] fraction in
+            guard let self = self, let duration = self.audioPlayer.currentDuration else { return }
+            self.audioPlayer.seek(to: fraction * duration) {
+                self.playerVC.endSeeking()
+            }
         }
         playerVC.onHistoryThumbsUp = { [weak self] trackToken in
             self?.historyThumbsUp(trackToken: trackToken)
@@ -284,10 +314,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func showPlayer() {
         _ = playerVC.view // ensure viewDidLoad has run
-        let historyOpen = UserDefaults.standard.bool(forKey: "historyTrayOpen")
-        playerVC.setHistoryOpen(historyOpen)
+        let trayOpen = UserDefaults.standard.bool(forKey: "trayOpen")
+        let modeStr = UserDefaults.standard.string(forKey: "trayMode") ?? "history"
+        let mode = TrayMode(rawValue: modeStr) ?? .history
+        playerVC.setTrayOpen(trayOpen, mode: mode)
         popover.contentViewController = playerVC
         popover.contentSize = playerVC.preferredContentSize
+        if trayOpen && mode == .lyrics {
+            fetchLyricsForCurrentTrack()
+        }
     }
 
     private func showStationList() {
@@ -297,10 +332,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Don't double-show
         guard stationListVC.view.superview == nil else { return }
 
-        // Collapse history tray if open (will restore on dismiss)
-        if playerVC.isHistoryOpen {
-            overlayClosedHistory = true
-            playerVC.setHistoryOpen(false)
+        // Collapse tray if open (will restore on dismiss)
+        if playerVC.isTrayOpen {
+            overlayClosedTray = true
+            overlayClosedTrayMode = playerVC.trayMode
+            playerVC.setTrayOpen(false)
             popover.contentSize = playerVC.preferredContentSize
         }
 
@@ -358,8 +394,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func dismissStationsOverlay() {
         guard stationListVC.view.superview != nil else { return }
         stationListVC.view.removeFromSuperview()
-        if overlayClosedHistory {
-            restoreHistoryIfNeeded()
+        if overlayClosedTray {
+            restoreTrayIfNeeded()
         } else {
             let restoreSize = NSSize(width: 360, height: 134)
             playerVC.preferredContentSize = restoreSize
@@ -374,10 +410,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Don't double-show
         guard aboutVC.view.superview == nil else { return }
 
-        // Collapse history tray if open (will restore on dismiss)
-        if playerVC.isHistoryOpen {
-            overlayClosedHistory = true
-            playerVC.setHistoryOpen(false)
+        // Collapse tray if open (will restore on dismiss)
+        if playerVC.isTrayOpen {
+            overlayClosedTray = true
+            overlayClosedTrayMode = playerVC.trayMode
+            playerVC.setTrayOpen(false)
             popover.contentSize = playerVC.preferredContentSize
         }
 
@@ -406,7 +443,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func dismissAboutOverlay() {
         guard aboutVC.view.superview != nil else { return }
         aboutVC.view.removeFromSuperview()
-        restoreHistoryIfNeeded()
+        restoreTrayIfNeeded()
     }
 
     private func showSettings() {
@@ -416,10 +453,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Don't double-show
         guard settingsVC.view.superview == nil else { return }
 
-        // Collapse history tray if open (will restore on dismiss)
-        if playerVC.isHistoryOpen {
-            overlayClosedHistory = true
-            playerVC.setHistoryOpen(false)
+        // Collapse tray if open (will restore on dismiss)
+        if playerVC.isTrayOpen {
+            overlayClosedTray = true
+            overlayClosedTrayMode = playerVC.trayMode
+            playerVC.setTrayOpen(false)
             popover.contentSize = playerVC.preferredContentSize
         }
 
@@ -452,15 +490,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func dismissSettingsOverlay() {
         guard settingsVC.view.superview != nil else { return }
         settingsVC.view.removeFromSuperview()
-        restoreHistoryIfNeeded()
+        restoreTrayIfNeeded()
     }
 
-    private func restoreHistoryIfNeeded() {
-        guard overlayClosedHistory else { return }
-        overlayClosedHistory = false
+    private func restoreTrayIfNeeded() {
+        guard overlayClosedTray else { return }
+        overlayClosedTray = false
         guard popover.contentViewController === playerVC else { return }
-        playerVC.setHistoryOpen(true)
+        playerVC.setTrayOpen(true, mode: overlayClosedTrayMode)
         popover.contentSize = playerVC.preferredContentSize
+        if overlayClosedTrayMode == .lyrics {
+            fetchLyricsForCurrentTrack()
+        }
     }
 
     /// Synthesize a mouse-moved event so AppKit updates tracking areas for
@@ -727,7 +768,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audioPlayer.stop()
         audioPlayer.clearQueue()
         offlineSince = Date()
-        playerVC.setHistoryOpen(false)
+        playerVC.setTrayOpen(false)
         popover.contentSize = playerVC.preferredContentSize
         playerVC.clearTrackDisplay()
         playerVC.showOffline()
@@ -824,15 +865,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    // MARK: - History
+    // MARK: - Tray
 
     private func toggleHistory(isOpen: Bool) {
-        UserDefaults.standard.set(isOpen, forKey: "historyTrayOpen")
-        let newSize = NSSize(width: 360, height: isOpen ? 394 : 134)
+        UserDefaults.standard.set(isOpen, forKey: "trayOpen")
+        if isOpen {
+            UserDefaults.standard.set("history", forKey: "trayMode")
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            self.popover.contentSize = newSize
+            self.popover.contentSize = self.playerVC.preferredContentSize
+        }
+    }
+
+    private func toggleLyrics() {
+        if playerVC.isTrayOpen && playerVC.trayMode == .lyrics {
+            // Close tray
+            playerVC.setTrayOpen(false)
+            currentSyncedLines = nil
+            UserDefaults.standard.set(false, forKey: "trayOpen")
+        } else {
+            // Open in lyrics mode
+            playerVC.setTrayOpen(true, mode: .lyrics)
+            fetchLyricsForCurrentTrack()
+            UserDefaults.standard.set(true, forKey: "trayOpen")
+            UserDefaults.standard.set("lyrics", forKey: "trayMode")
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.popover.contentSize = self.playerVC.preferredContentSize
+        }
+    }
+
+    private func fetchLyricsForCurrentTrack() {
+        guard let track = audioPlayer.currentTrack else {
+            // No track yet — show spinner (track will trigger a re-fetch when it arrives)
+            playerVC.showLyricsLoading()
+            return
+        }
+
+        let song = track.songName ?? ""
+        let artist = track.artistName ?? ""
+        let album = track.albumName ?? ""
+
+        playerVC.showLyricsLoading()
+        currentSyncedLines = nil
+
+        LyricsProvider.shared.fetchLyrics(song: song, artist: artist, album: album) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // Verify we still want this result (track hasn't changed)
+                let currentSong = self.audioPlayer.currentTrack?.songName ?? ""
+                let currentArtist = self.audioPlayer.currentTrack?.artistName ?? ""
+                guard currentSong == song && currentArtist == artist else { return }
+
+                self.playerVC.showLyrics(result)
+                if case .synced(let lines) = result {
+                    self.currentSyncedLines = lines
+                }
+            }
         }
     }
 
@@ -928,7 +1021,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: - Sign Out
 
     private func signOut() {
-        overlayClosedHistory = false
+        overlayClosedTray = false
         settingsVC.view.removeFromSuperview()
         aboutVC.view.removeFromSuperview()
         stationListVC.view.removeFromSuperview()
@@ -938,8 +1031,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         isLoggedIn = false
         stations = []
         currentStation = nil
-        UserDefaults.standard.set(false, forKey: "historyTrayOpen")
-        playerVC.setHistoryOpen(false)
+        currentSyncedLines = nil
+        UserDefaults.standard.set(false, forKey: "trayOpen")
+        playerVC.setTrayOpen(false)
+        playerVC.clearLyrics()
+        LyricsProvider.shared.clearCache()
         scrollingTitle.setIdle()
         showLogin()
     }
@@ -997,18 +1093,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             pendingScrollingTitleHide = false
         }
 
-        // Dismiss any open overlays (don't restore history — popover is closing)
-        overlayClosedHistory = false
+        // Dismiss any open overlays (don't restore tray — popover is closing)
+        overlayClosedTray = false
         settingsVC.view.removeFromSuperview()
         aboutVC.view.removeFromSuperview()
         stationListVC.view.removeFromSuperview()
 
         // Restore player size so next open isn't stuck at overlay height
         if popover.contentViewController === playerVC {
-            let historyOpen = UserDefaults.standard.bool(forKey: "historyTrayOpen")
-            playerVC.setHistoryOpen(historyOpen)
+            let trayOpen = UserDefaults.standard.bool(forKey: "trayOpen")
+            let modeStr = UserDefaults.standard.string(forKey: "trayMode") ?? "history"
+            let mode = TrayMode(rawValue: modeStr) ?? .history
+            playerVC.setTrayOpen(trayOpen, mode: mode)
             let size = playerVC.preferredContentSize
             popover.contentSize = size
+            if trayOpen && mode == .lyrics {
+                fetchLyricsForCurrentTrack()
+            }
         } else if popover.contentViewController !== loginVC {
             showPlayer()
         }

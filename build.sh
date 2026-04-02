@@ -68,6 +68,7 @@ swiftc -parse-as-library -DTESTING \
   -swift-version 5 -o SixthTests \
   Sources/Models.swift Sources/BlowfishCrypto.swift Sources/PandoraAPI.swift \
   Sources/CredentialStore.swift Sources/AudioPlayer.swift Sources/TrackHistory.swift \
+  Sources/LyricsProvider.swift \
   Tests/*.swift
 
 echo "Built: ./SixthTests"

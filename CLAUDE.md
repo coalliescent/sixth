@@ -20,14 +20,15 @@ open Sixth.app    # launch
 
 ## Source Layout
 
-`Sources/` (15 files):
+`Sources/` (16 files):
 - `Main.swift` — entry point
 - `AppDelegate.swift` — status item, popover, navigation, app lifecycle
-- `PlayerViewController.swift` — main player UI (album art, controls, progress, history tray)
+- `PlayerViewController.swift` — main player UI (album art, controls, progress, history/lyrics tray, seek overlay)
 - `LoginViewController.swift` — login form
 - `StationListViewController.swift` — station picker (table view)
 - `SettingsViewController.swift` — settings screen
-- `AudioPlayer.swift` — AVPlayer wrapper, track queue management
+- `AudioPlayer.swift` — AVPlayer wrapper, track queue management, seek
+- `LyricsProvider.swift` — lyrics fetching (LRCLIB + Lyrics.ovh fallback), LRC parser, in-memory cache
 - `TrackHistory.swift` — recently played track history (persisted via UserDefaults, capped at 100)
 - `PandoraAPI.swift` — Pandora JSON API client (partner/user login, playlist, feedback)
 - `Models.swift` — data models (Station, Track, API responses)
@@ -37,6 +38,20 @@ open Sixth.app    # launch
 - `NotificationManager.swift` — macOS notification support
 - `ScrollingTitle.swift` — scrolling now-playing text in menubar
 
-`Tests/` (6 files):
+`Tests/` (7 files):
 - `TestMain.swift` — custom test runner (not XCTest)
-- `BlowfishCryptoTests.swift`, `ModelsTests.swift`, `PandoraAPITests.swift`, `TrackHistoryTests.swift`, `IntegrationTests.swift`
+- `BlowfishCryptoTests.swift`, `ModelsTests.swift`, `PandoraAPITests.swift`, `TrackHistoryTests.swift`, `LyricsProviderTests.swift`, `IntegrationTests.swift`
+
+## Lyrics & Tray
+
+The player has a shared tray below the main UI with two mutually exclusive modes toggled by bottom-row buttons:
+- **History** (`list.bullet` icon) — recently played tracks with thumbs up/down
+- **Lyrics** (🗣️ icon) — song lyrics fetched from LRCLIB (synced + plain) with Lyrics.ovh fallback
+
+The tray is resizable via a grabber bar at the bottom edge (drag to resize, snap-close below 60px, min 200px when open, max 500px). Height and mode are persisted in UserDefaults (`trayOpen`, `trayMode`, `trayHeight`).
+
+Synced lyrics highlight the current line (white/semibold) and auto-scroll during playback. Plain lyrics display in white with paragraph spacing.
+
+## Interactive Playhead
+
+The progress bar has a transparent seek overlay with a silver playhead circle (visible on hover). Click or drag anywhere on the bar to seek within the track. Progress bar animation is suppressed via CATransaction.
