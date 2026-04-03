@@ -73,7 +73,7 @@ struct PlaylistResult: Decodable {
     }
 }
 
-struct PlaylistItem: Decodable {
+struct PlaylistItem: Codable {
     let trackToken: String?
     let artistName: String?
     let albumName: String?
@@ -131,6 +131,22 @@ struct PlaylistItem: Decodable {
         self.songIdentity = songIdentity; self.adToken = adToken
     }
 
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(trackToken, forKey: .trackToken)
+        try c.encodeIfPresent(artistName, forKey: .artistName)
+        try c.encodeIfPresent(albumName, forKey: .albumName)
+        try c.encodeIfPresent(songName, forKey: .songName)
+        try c.encodeIfPresent(songRating, forKey: .songRating)
+        try c.encodeIfPresent(albumArtUrl, forKey: .albumArtUrl)
+        try c.encodeIfPresent(additionalAudioUrl, forKey: .additionalAudioUrl)
+        try c.encodeIfPresent(audioUrlMap, forKey: .audioUrlMap)
+        try c.encodeIfPresent(songDetailUrl, forKey: .songDetailUrl)
+        try c.encodeIfPresent(stationId, forKey: .stationId)
+        try c.encodeIfPresent(songIdentity, forKey: .songIdentity)
+        try c.encodeIfPresent(adToken, forKey: .adToken)
+    }
+
     var bestAudioUrl: String? {
         // Prefer high quality AAC, then medium, then additional URLs
         if let map = audioUrlMap {
@@ -142,13 +158,13 @@ struct PlaylistItem: Decodable {
     }
 }
 
-struct AudioUrlMap: Decodable {
+struct AudioUrlMap: Codable {
     let highQuality: AudioUrl?
     let mediumQuality: AudioUrl?
     let lowQuality: AudioUrl?
 }
 
-struct AudioUrl: Decodable {
+struct AudioUrl: Codable {
     let bitrate: String?
     let encoding: String?
     let audioUrl: String?
@@ -158,6 +174,13 @@ struct AudioUrl: Decodable {
         case bitrate, encoding, audioUrl
         case protocol_ = "protocol"
     }
+}
+
+struct ResumeState: Codable {
+    let track: PlaylistItem
+    let position: Double       // seconds into the track
+    let stationToken: String
+    let savedAt: Date
 }
 
 struct AddFeedbackResult: Decodable {

@@ -120,6 +120,13 @@ struct TrackHistoryTests {
                                   stationId: nil, timestamp: Date())
         history.add(entry1)
         history.add(entry2)
-        TestRunner.assertEqual(history.entries.count, 2, "duplicate tracks — both kept")
+        TestRunner.assertEqual(history.entries.count, 1, "consecutive duplicate — deduplicated")
+
+        // Different track after same token is still added
+        let entry3 = HistoryEntry(songName: "Other", artistName: "Artist", albumName: "Album",
+                                  albumArtUrl: nil, songRating: 0, trackToken: "different_token",
+                                  stationId: nil, timestamp: Date())
+        history.add(entry3)
+        TestRunner.assertEqual(history.entries.count, 2, "different track — added normally")
     }
 }

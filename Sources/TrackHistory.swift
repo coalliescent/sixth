@@ -52,6 +52,8 @@ class TrackHistory {
     }
 
     func add(_ entry: HistoryEntry) {
+        // Don't duplicate the most recent entry (handles resume-on-relaunch)
+        if let latest = entries.first, latest.trackToken == entry.trackToken { return }
         entries.insert(entry, at: 0)
         if entries.count > 100 {
             entries = Array(entries.prefix(100))

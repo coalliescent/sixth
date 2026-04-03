@@ -120,6 +120,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Add current track to history (normally only happens on next-track transition)
+        if let track = audioPlayer.currentTrack, !track.isAd {
+            TrackHistory.shared.add(HistoryEntry(from: track))
+        }
+        // Save resume state so we can pick up where we left off
+        saveResumeState()
+    }
+
+    // MARK: - Resume State
+
+    private func saveResumeState() {
+        guard let track = audioPlayer.currentTrack,
+              let position = audioPlayer.currentPosition,
+              let stationToken = currentStation?.stationToken else {
+            UserDefaults.standard.removeObject(forKey: "resumeState")
+            return
+        }
+        let state = ResumeState(track: track, position: position,
+                                stationToken: stationToken, savedAt: Date())
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: "resumeState")
+        }
+    }
+
+    private func loadResumeState() -> ResumeState? {
+        guard let data = UserDefaults.standard.data(forKey: "resumeState"),
+              let state = try? JSONDecoder().decode(ResumeState.self, from: data) else {
+            return nil
+        }
+        // Expire if saved more than 4 hours ago (audio URLs expire)
+        if Date().timeIntervalSince(state.savedAt) > 4 * 3600 { return nil }
+        return state
+    }
+
+    private func clearResumeState() {
+        UserDefaults.standard.removeObject(forKey: "resumeState")
+    }
+
     // MARK: - Audio Player Callbacks
 
     private func setupAudioPlayerCallbacks() {
@@ -616,10 +655,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         isFetchingTracks = false  // cancel any in-flight fetch for old station
         audioPlayer.setStation(station.stationToken)
         showPlayer()
-        playerVC.setControlsEnabled(false)
-        playerVC.updateTrack(song: "", artist: "")
-        playerVC.showLoading()
-        fetchMoreTracks()
+
+        // Resume saved track if available for this station
+        if let state = loadResumeState(), state.stationToken == station.stationToken {
+            clearResumeState()
+            audioPlayer.enqueue([state.track])
+            audioPlayer.seek(to: state.position)
+            fetchMoreTracks()
+        } else {
+            clearResumeState()
+            playerVC.setControlsEnabled(false)
+            playerVC.updateTrack(song: "", artist: "")
+            playerVC.showLoading()
+            fetchMoreTracks()
+        }
     }
 
     private func enqueueAndPrefetch(_ tracks: [PlaylistItem]) {
@@ -1028,6 +1077,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audioPlayer.stop()
         Task { await api.logout() }
         CredentialStore.deleteCredentials()
+        clearResumeState()
         isLoggedIn = false
         stations = []
         currentStation = nil

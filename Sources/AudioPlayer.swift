@@ -220,6 +220,11 @@ class AudioPlayer {
         }
     }
 
+    var currentPosition: Double? {
+        guard let time = player?.currentTime(), time.isNumeric else { return nil }
+        return time.seconds
+    }
+
     var currentDuration: Double? {
         guard let duration = player?.currentItem?.duration, duration.isNumeric else { return nil }
         return duration.seconds
@@ -292,6 +297,7 @@ class AudioPlayer {
     func playNext() {}
     func replay() {}
     func seek(to seconds: Double, completion: (() -> Void)? = nil) { completion?() }
+    var currentPosition: Double? { return nil }
     var currentDuration: Double? { return nil }
     func togglePlayPause() {}
     func stop() {}
