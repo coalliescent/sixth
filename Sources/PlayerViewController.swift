@@ -259,6 +259,8 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
     var onHistoryToggled: ((Bool) -> Void)?
     var onHistoryThumbsUp: ((String) -> Void)?
     var onHistoryThumbsDown: ((String) -> Void)?
+    var onHistoryReplay: ((String) -> Void)?
+    var canReplayHistoryTrack: ((String) -> Bool)?
     var onLyrics: (() -> Void)?
     var onTrayResized: ((CGFloat) -> Void)?
     var onSeek: ((Double) -> Void)?  // normalized 0-1
@@ -1175,6 +1177,11 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         onHistoryThumbsDown?(token)
     }
 
+    @objc private func historyReplayTapped(_ sender: NSButton) {
+        guard let token = sender.identifier?.rawValue else { return }
+        onHistoryReplay?(token)
+    }
+
     // MARK: - NSTableViewDataSource
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -1212,7 +1219,7 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         title.font = .systemFont(ofSize: 12, weight: .medium)
         title.textColor = .white
         title.lineBreakMode = .byTruncatingTail
-        title.frame = NSRect(x: 56, y: 28, width: 200, height: 16)
+        title.frame = NSRect(x: 56, y: 28, width: 188, height: 16)
         cell.addSubview(title)
 
         // Artist
@@ -1220,8 +1227,20 @@ class PlayerViewController: NSViewController, NSTableViewDataSource, NSTableView
         artist.font = .systemFont(ofSize: 10)
         artist.textColor = .lightGray
         artist.lineBreakMode = .byTruncatingTail
-        artist.frame = NSRect(x: 56, y: 10, width: 200, height: 14)
+        artist.frame = NSRect(x: 56, y: 10, width: 188, height: 14)
         cell.addSubview(artist)
+
+        // Replay button (only if the track's playable data is still cached)
+        if canReplayHistoryTrack?(entry.trackToken) == true {
+            let replayBtn = NSButton(frame: NSRect(x: 250, y: 16, width: 20, height: 20))
+            replayBtn.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "Replay")
+            replayBtn.isBordered = false
+            replayBtn.contentTintColor = .gray
+            replayBtn.identifier = NSUserInterfaceItemIdentifier(entry.trackToken)
+            replayBtn.target = self
+            replayBtn.action = #selector(historyReplayTapped)
+            cell.addSubview(replayBtn)
+        }
 
         // Thumbs down button
         let isDisliked = entry.songRating == -1

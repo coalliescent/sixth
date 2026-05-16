@@ -14,9 +14,19 @@ class AudioPlayer {
     private var trackQueue: [PlaylistItem] = []
     private(set) var currentTrack: PlaylistItem?
     private(set) var isPlaying = false
+    // User's pause intent — survives across stop()/recovery so auto-recovery
+    // paths (network restore, KVO failure, mid-playback errors) don't start
+    // playback when the user explicitly paused.
+    private(set) var userPaused = false
     private var stationToken: String?
     private let api: PandoraAPI
     private var consecutiveFailures = 0
+
+    // In-memory cache of recently-played PlaylistItems, keyed by trackToken.
+    // Lets the history UI offer replay for entries whose audio URL is still valid.
+    private static let recentlyPlayedTTL: TimeInterval = 4 * 3600
+    private static let recentlyPlayedCap = 100
+    private var recentlyPlayed: [String: (item: PlaylistItem, addedAt: Date)] = [:]
 
     // Callbacks
     var onTrackChanged: ((PlaylistItem) -> Void)?
@@ -47,14 +57,43 @@ class AudioPlayer {
         trackQueue.append(contentsOf: tracks)
         consecutiveFailures = 0
         if currentTrack == nil && !trackQueue.isEmpty {
-            playNext()
+            if userPaused {
+                logger.info("enqueue: user is paused, not auto-starting")
+            } else {
+                playNext()
+            }
         }
+    }
+
+    func clearPauseIntent() {
+        userPaused = false
     }
 
     func clearQueue() {
         logger.info("clearQueue (had \(self.trackQueue.count) tracks)")
         trackQueue.removeAll()
         consecutiveFailures = 0
+    }
+
+    // MARK: - Recently-Played Cache
+
+    func cachedTrack(forToken token: String) -> PlaylistItem? {
+        guard let entry = recentlyPlayed[token] else { return nil }
+        if Date().timeIntervalSince(entry.addedAt) >= Self.recentlyPlayedTTL {
+            recentlyPlayed.removeValue(forKey: token)
+            return nil
+        }
+        return entry.item
+    }
+
+    private func cacheRecentlyPlayed(_ track: PlaylistItem) {
+        guard let token = track.trackToken, !token.isEmpty else { return }
+        recentlyPlayed[token] = (item: track, addedAt: Date())
+        if recentlyPlayed.count > Self.recentlyPlayedCap {
+            if let oldest = recentlyPlayed.min(by: { $0.value.addedAt < $1.value.addedAt }) {
+                recentlyPlayed.removeValue(forKey: oldest.key)
+            }
+        }
     }
 
     // MARK: - Playback Controls
@@ -64,6 +103,7 @@ class AudioPlayer {
             logger.info("playNext: queue empty, requesting more tracks")
             if let outgoing = currentTrack, !outgoing.isAd {
                 TrackHistory.shared.add(HistoryEntry(from: outgoing))
+                cacheRecentlyPlayed(outgoing)
                 currentTrack = nil
             }
             onNeedMoreTracks?()
@@ -94,6 +134,7 @@ class AudioPlayer {
 
         if let outgoing = currentTrack, !outgoing.isAd {
             TrackHistory.shared.add(HistoryEntry(from: outgoing))
+            cacheRecentlyPlayed(outgoing)
         }
 
         logger.info("play: \(track.songName ?? "?", privacy: .public) by \(track.artistName ?? "?", privacy: .public)")
@@ -116,6 +157,13 @@ class AudioPlayer {
                 case .failed:
                     let errMsg = observedItem.error?.localizedDescription ?? "unknown"
                     logger.error("item FAILED to load: \(errMsg, privacy: .public)")
+
+                    // Don't auto-recover (would start playback) if the user paused.
+                    if self.userPaused {
+                        logger.info("item failed but user is paused — not auto-recovering")
+                        self.onError?("Playback failed")
+                        return
+                    }
 
                     // Classify the error to choose recovery strategy
                     if let nsError = observedItem.error as NSError? {
@@ -175,6 +223,10 @@ class AudioPlayer {
             Task { @MainActor in
                 logger.error("mid-playback error: \(error?.localizedDescription ?? "unknown", privacy: .public)")
                 self?.onError?(error?.localizedDescription ?? "Playback failed")
+                if self?.userPaused == true {
+                    logger.info("mid-playback error while paused — not auto-advancing")
+                    return
+                }
                 self?.playNext()
             }
         }
@@ -235,9 +287,11 @@ class AudioPlayer {
         if isPlaying {
             player?.pause()
             isPlaying = false
+            userPaused = true
         } else {
             player?.play()
             isPlaying = true
+            userPaused = false
         }
         onPlaybackStateChanged?(isPlaying)
     }
@@ -296,6 +350,9 @@ class AudioPlayer {
     func clearQueue() {}
     func playNext() {}
     func replay() {}
+    func play(track: PlaylistItem) {}
+    func cachedTrack(forToken token: String) -> PlaylistItem? { return nil }
+    func clearPauseIntent() {}
     func seek(to seconds: Double, completion: (() -> Void)? = nil) { completion?() }
     var currentPosition: Double? { return nil }
     var currentDuration: Double? { return nil }

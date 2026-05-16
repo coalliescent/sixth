@@ -291,6 +291,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         playerVC.onHistoryThumbsDown = { [weak self] trackToken in
             self?.historyThumbsDown(trackToken: trackToken)
         }
+        playerVC.canReplayHistoryTrack = { [weak self] trackToken in
+            return self?.audioPlayer.cachedTrack(forToken: trackToken) != nil
+        }
+        playerVC.onHistoryReplay = { [weak self] trackToken in
+            guard let self = self,
+                  let track = self.audioPlayer.cachedTrack(forToken: trackToken) else { return }
+            self.audioPlayer.clearPauseIntent()
+            self.audioPlayer.play(track: track)
+        }
         playerVC.setControlsEnabled(false)
 
         // Login
@@ -576,6 +585,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func resumePlayback() {
         guard currentStation != nil, isLoggedIn, !isFetchingTracks else { return }
+        // User explicitly asked to resume — clear any prior pause intent so
+        // enqueue() will auto-start once tracks arrive.
+        audioPlayer.clearPauseIntent()
         playerVC.showLoading()
         playerVC.setControlsEnabled(false)
         fetchMoreTracks()
@@ -654,6 +666,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         UserDefaults.standard.set(played, forKey: "recentlyPlayedStations")
         isFetchingTracks = false  // cancel any in-flight fetch for old station
         audioPlayer.setStation(station.stationToken)
+        // Picking a station is an explicit play intent.
+        audioPlayer.clearPauseIntent()
         showPlayer()
 
         // Resume saved track if available for this station
@@ -841,7 +855,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             do {
                 try await self.reAuthenticate()
                 logger.info("network restored, session ready (resume=\(shouldResume))")
-                if shouldResume && self.currentStation != nil && self.audioPlayer.currentTrack == nil {
+                if shouldResume && self.currentStation != nil && self.audioPlayer.currentTrack == nil && !self.audioPlayer.userPaused {
                     self.playerVC.showLoading()
                     self.fetchMoreTracks()
                 }
